@@ -15,7 +15,7 @@ Request flow:
 
 common owns validation, default versioned classifier wording, label semantics,
 and answer math. hf_prompt_policies adds startup-selected formatting and binary Noul
-adaptation without modifying common. This file owns text-only role assembly,
+adaptation without modifying common. This file owns text/image chat role assembly,
 native chat/tokenizer boundaries,
 shared-prefix inference, queue/cancellation controls, usage accounting, HTTP, and
 startup. Model weights load only when load_service/main is called.
@@ -32,6 +32,7 @@ tests/; no separate simple_jev package or duplicate baseline template is needed.
 
 import argparse
 import asyncio
+import copy
 import math
 import os
 import sys
@@ -78,6 +79,10 @@ class Branch:
     as the shared question's output_labels. Messages/prefix remain available for
     inspection; they are not reconstructed from tokens during inference.
     reasoning_content is an optional fixed native assistant prefill, not output.
+    media_spans lists (start, hf_vision.MediaChunk) pairs for image branches:
+    token_ids then holds each image's embeddings as request-unique negative
+    placeholder IDs, so prefix comparison and usage accounting see expanded
+    image tokens without inventing vocabulary IDs.
 
     render_only compilation leaves both ID lists empty and is not executable.
     frozen prevents attribute reassignment, not mutation of the contained lists.
@@ -89,6 +94,7 @@ class Branch:
     messages: list[dict]
     answer_prefix: str
     reasoning_content: str | None = None
+    media_spans: tuple = ()
 
 
 @dataclass
@@ -105,6 +111,9 @@ class CompiledRequest:
     plan: PromptPlan
     branches: list[Branch]
     binary_noul_keys: tuple[str, ...] = ()
+    # hf_vision.RequestImages for image chat: owns the request's mtmd chunks
+    # and encoded embeddings for as long as the compiled branches are alive.
+    media: Any = None
 
 
 def common_prefix(sequences):
@@ -124,17 +133,61 @@ def common_prefix(sequences):
     return first[:end]
 
 
+def render_chat(renderer, messages, **kwargs):
+    """Preserve turns unless the native template requires strict alternation.
+
+    Appending a classifier question to user-ending chat otherwise makes valid
+    Gemma3 conversations unrenderable. For that native constraint only, coalesce
+    adjacent user content in order, preserving every image and text block.
+    """
+    from jinja2.exceptions import TemplateError
+    try:
+        return renderer.apply_chat_template(messages, **kwargs)
+    except TemplateError as exc:
+        if 'alternat' not in str(exc).lower():
+            raise ValueError('Model chat template rejected the conversation') from exc
+        merged = []
+        for message in messages:
+            if merged and message['role'] == merged[-1]['role'] == 'user':
+                left, right = merged[-1]['content'], message['content']
+                if isinstance(left, str) and isinstance(right, str):
+                    merged[-1]['content'] = left + '\n\n' + right
+                else:
+                    left = [{'type': 'text', 'text': left}] if isinstance(left, str) else left
+                    right = [{'type': 'text', 'text': right}] if isinstance(right, str) else right
+                    merged[-1]['content'] = left + [{'type': 'text', 'text': '\n\n'}] + copy.deepcopy(right)
+            else:
+                merged.append(copy.deepcopy(message))
+        if len(merged) == len(messages):
+            raise ValueError('Model chat template requires alternating conversation roles') from exc
+        try:
+            return renderer.apply_chat_template(merged, **kwargs)
+        except TemplateError as retry:
+            raise ValueError('Model chat template rejected the conversation') from retry
+
+
 class PromptCompiler:
     """Render shared classifier plans with a model's native tokenizer template."""
 
-    def __init__(self, tokenizer, max_tokens=16384, version=DEFAULT_TEMPLATE_VERSION, prompt_policy="baseline", max_choice_options=255):
+    def __init__(self, tokenizer, max_tokens=16384, version=DEFAULT_TEMPLATE_VERSION, prompt_policy="baseline", max_choice_options=255, vision=None, max_image_width=None, max_image_height=None,
+                 default_image_max_width=None, default_image_max_height=None):
         """Store the renderer, complete-prompt token limit, and shared version.
 
         Version validation is performed by common.prepare_prompt during compile.
         Named prompt policies are startup-selected HF formatting/scoring adaptations.
-        This class does not load a tokenizer or model on its own.
+        vision is an optional hf_vision.MtmdVision (a loaded mmproj projector);
+        without it, image chat is rejected. This class does not load a
+        tokenizer or model on its own.
         """
         self.tokenizer = tokenizer
+        from hf_vision import validate_image_resize_config
+        validate_image_resize_config(max_image_width, max_image_height,
+                                     default_image_max_width, default_image_max_height)
+        self.vision = vision
+        self.max_image_width = max_image_width
+        self.max_image_height = max_image_height
+        self.default_image_max_width = default_image_max_width
+        self.default_image_max_height = default_image_max_height
         self.max_tokens = max_tokens
         self.version = version
         validate_policy(prompt_policy)
@@ -143,6 +196,9 @@ class PromptCompiler:
             raise ValueError("max_choice_options must be between 2 and 255")
         self.max_choice_options = max_choice_options
         self._extended_choice_labels = None
+
+    async def compile_async(self, request):
+        return await asyncio.to_thread(self.compile, request)
 
     def validate_choice_capacity(self):
         """Allocate fixed-width labels; every real prompt is checked again below."""
@@ -171,7 +227,7 @@ class PromptCompiler:
         return self._extended_choice_labels
 
     def compile(self, request: ClassifierRequest, *, render_only=False):
-        """Validate text input and compile one branch per shared-plan question.
+        """Validate text/image input and compile one branch per shared-plan question.
 
         request may be a ClassifierRequest or an input dictionary. render_only
         returns roles/content and the shared plan for diagnostics/tests; it skips
@@ -183,19 +239,51 @@ class PromptCompiler:
         """
         if not isinstance(request, ClassifierRequest):
             request = ClassifierRequest.model_validate(request)
-        # The shared schema allows richer contexts for other integrations. This
-        # adapter narrows that contract before constructing text-only messages.
-        if request.tools or request.mm_processor_kwargs or request.media_io_kwargs:
+        # Reject unimplemented tools/options rather than silently dropping them.
+        if request.tools or request.mm_processor_kwargs:
             raise ValueError(
-                "HF text reference does not support tools or media options"
+                "This server does not support tools or native processor overrides"
             )
+        from hf_vision import image_resize_bounds
+        image_width, image_height = image_resize_bounds(
+            request.media_io_kwargs, max_image_width=self.max_image_width,
+            max_image_height=self.max_image_height,
+            default_image_max_width=self.default_image_max_width,
+            default_image_max_height=self.default_image_max_height,
+        )
         if request.messages and any(
-            not isinstance(m.content, str)
-            or m.model_extra
-            or m.role in {"tool", "function"}
+            m.model_extra or m.role in {"tool", "function"} or m.content is None
             for m in request.messages
         ):
-            raise ValueError("HF text reference accepts plain text chat only")
+            raise ValueError("This server does not support tool messages or null content")
+        chat = [m.model_dump(exclude_none=True) for m in request.messages] if request.messages else None
+        images, media = [], None
+        if chat and any(not isinstance(m['content'], str) for m in chat):
+            from hf_vision import image_messages
+            chat, images = image_messages(chat, max_image_width=image_width,
+                                          max_image_height=image_height)
+            if images:
+                if self.vision is None:
+                    raise ValueError(
+                        "Image chat requires a vision projector; start the server with --mmproj"
+                    )
+                if not render_only:
+                    media = self.vision.prepare(images)
+            # System policy assembly operates on text; image blocks are user-only.
+            for message in chat:
+                if isinstance(message['content'], list) and all(b['type'] == 'text' for b in message['content']):
+                    message['content'] = ''.join(b['text'] for b in message['content'])
+            if images:
+                # llama-server convention: each image becomes a text block
+                # holding the mtmd media marker, and mtmd supplies the model's
+                # own image begin/end tokens. Image turns stay block lists, as
+                # some templates (e.g. SmolVLM) render only list content.
+                for message in chat:
+                    if isinstance(message['content'], list):
+                        message['content'] = [
+                            {'type': 'text', 'text': self.vision.marker} if block['type'] == 'image' else block
+                            for block in message['content']
+                        ]
 
         largest_choice = max((len(q.criteria) for q in request.questions.values()
                               if q.type == 'choice'), default=0)
@@ -206,6 +294,9 @@ class PromptCompiler:
             request, self.version, self.prompt_policy, extended_choice_labels=labels
         )
         system = plan.system_prompt_prefix + plan.prefix_instruction
+        # Some native templates (Gemma) put the thinking flag in the SYSTEM turn.
+        # Shared policies therefore choose it once per request, never per branch.
+        shared_thinking = any(q.type == 'choice' for q in request.questions.values())
         branches = []
         for question in plan.questions:
             content = plan.suffix_instruction + question.instruction
@@ -223,7 +314,7 @@ class PromptCompiler:
             else:
                 # Dump into new dictionaries so adding classifier instructions
                 # never mutates the caller's existing conversation.
-                messages = [m.model_dump(exclude_none=True) for m in request.messages]
+                messages = copy.deepcopy(chat)
                 if messages[0]["role"] == "system":
                     messages[0]["content"] = system + "\n" + messages[0]["content"]
                 else:
@@ -233,15 +324,16 @@ class PromptCompiler:
             messages, reasoning_content = format_branch(
                 messages, request, question.question_id, self.prompt_policy
             )
-            ids, output_ids = [], []
+            ids, output_ids, spans = [], [], ()
             if not render_only:
+                renderer = self.tokenizer
                 # Render first, then append incomplete JSON to the open assistant
                 # position. Do not create a completed assistant message or add
                 # a closing brace/EOS before the next-token scoring position.
                 if self.prompt_policy == "baseline":
                     text = (
-                        self.tokenizer.apply_chat_template(
-                            messages,
+                        render_chat(
+                            renderer, messages,
                             tokenize=False,
                             add_generation_prompt=True,
                             enable_thinking=False,
@@ -259,30 +351,37 @@ class PromptCompiler:
                     # one text block (e.g. a system-turn boundary space). Do not
                     # hardcode model names, whitespace, or tokenizer IDs here.
                     native_messages = [
-                        {**message, "content": [{"type": "text", "text": message["content"]}]}
+                        {**message, "content": ([{"type": "text", "text": message["content"]}]
+                                                if isinstance(message['content'], str) else message['content'])}
                         for message in messages + [assistant]
                     ]
-                    text = self.tokenizer.apply_chat_template(
-                        native_messages, tokenize=False,
+                    text = render_chat(
+                        renderer, native_messages, tokenize=False,
                         add_generation_prompt=False, continue_final_message=True,
-                        enable_thinking=reasoning_content is not None,
+                        enable_thinking=(shared_thinking if self.prompt_policy.startswith('shared_')
+                                         else reasoning_content is not None),
                     )
                     if reasoning_content is not None and reasoning_content not in text:
                         raise ValueError("Model chat template did not preserve fixed policy reasoning content")
                 # The template already supplies special tokens. Adding another
                 # BOS/EOS during encode would alter the intended model input.
-                ids = self.tokenizer.encode(text, add_special_tokens=False)
+                if media is not None:
+                    ids, spans, tail = self.vision.tokenize(self.tokenizer, text, media)
+                    tail_ids = self.tokenizer.encode(tail, add_special_tokens=False)
+                else:
+                    ids = self.tokenizer.encode(text, add_special_tokens=False)
+                    tail, tail_ids = text, ids
                 if not ids or len(ids) > self.max_tokens:
                     raise ValueError(
                         f"Branch for {question.question_id!r} must contain 1–{self.max_tokens} tokens"
                     )
                 # Derive IDs at the actual rendered boundary, not from isolated
                 # label encoding. Check every branch; templates/context can affect it.
+                # Image branches check the text after their final image: mtmd
+                # tokenizes each text span between images independently.
                 for label in question.output_labels:
-                    extended = self.tokenizer.encode(
-                        text + label, add_special_tokens=False
-                    )
-                    if len(extended) != len(ids) + 1 or extended[:-1] != ids:
+                    extended = self.tokenizer.encode(tail + label, add_special_tokens=False)
+                    if len(extended) != len(tail_ids) + 1 or extended[:-1] != tail_ids:
                         raise ValueError(
                             f"Answer label {label!r} is not single-token stable"
                         )
@@ -297,9 +396,10 @@ class PromptCompiler:
                     messages,
                     question.answer_prefix,
                     reasoning_content,
+                    spans,
                 )
             )
-        return CompiledRequest(plan, branches, binary_noul_keys)
+        return CompiledRequest(plan, branches, binary_noul_keys, media)
 
 
 # Inference result
@@ -368,7 +468,7 @@ class LlamaCppBackend:
 
     def __init__(
         self, model, context, *, max_batch_size=32, max_batch_tokens=32768,
-        share_prefix=True,
+        share_prefix=True, vision=None,
     ):
         """Bind one loaded model/context and bounds on packed suffix batches.
 
@@ -387,6 +487,9 @@ class LlamaCppBackend:
         # copying shared prefix cells, the only strategy that is valid when
         # llama.cpp cannot duplicate an architecture's rolling state.
         self.share_prefix = share_prefix
+        # Optional hf_vision.MtmdVision bound to this model; required only to
+        # decode image spans, whose embeddings it encodes once per request.
+        self.vision = vision
         # Protect the context even if cancellation returns before its thread exits.
         self._lock = threading.Lock()
 
@@ -438,6 +541,34 @@ class LlamaCppBackend:
         finally:
             llama_cpp.llama_batch_free(batch)
 
+    def _decode_range(self, llama_cpp, compiled, branch, begin, end, seq):
+        """Decode token_ids[begin:end] of one branch into seq, without logits.
+
+        Text runs go through one packed decode each; image spans decode their
+        (once-per-request encoded) projector embeddings through mtmd. begin
+        and end never cut an image span. Returns the number of decodes issued.
+        """
+        ids, spans = branch.token_ids, branch.media_spans
+        pos = position_at(spans, begin)
+        index, decodes = begin, 0
+        for start, chunk in spans:
+            if start < begin or start >= end:
+                continue
+            if start > index:
+                self._decode_rows(llama_cpp, [(seq, pos, ids[index:start], False)])
+                pos += start - index
+                decodes += 1
+            pos = self.vision.decode(
+                self.context.ctx, compiled.media, chunk, pos, seq,
+                llama_cpp.llama_n_batch(self.context.ctx),
+            )
+            index = start + chunk.n_tokens
+            decodes += 1
+        if end > index:
+            self._decode_rows(llama_cpp, [(seq, pos, ids[index:end], False)])
+            decodes += 1
+        return decodes
+
     def _score(self, compiled, stop):
         """Execute one request; all model/KV work stays under the same lock."""
         import llama_cpp
@@ -446,34 +577,54 @@ class LlamaCppBackend:
             if stop.is_set():
                 raise asyncio.CancelledError()
             start = time.perf_counter()
-            sequences = [b.token_ids for b in compiled.branches]
+            branches = compiled.branches
+            sequences = [b.token_ids for b in branches]
             if not sequences or any(not ids for ids in sequences):
                 raise ValueError("Expected nonempty scoring prompts")
             if compiled.plan is None:
                 raise ValueError("Backend scoring requires the compiled plan")
+            multimodal = any(b.media_spans for b in branches)
+            if multimodal and (self.vision is None or compiled.media is None):
+                raise ValueError("Image branches require a loaded vision projector")
             labels = {
                 question.branch_id: question.output_labels
                 for question in compiled.plan.questions
             }
             # Leave at least one suffix token, including for identical prompts.
-            prefix = (
-                common_prefix(sequences)[: min(map(len, sequences)) - 1]
+            prefix_len = (
+                len(common_prefix(sequences)[: min(map(len, sequences)) - 1])
                 if self.share_prefix
-                else []
+                else 0
             )
+            # Image placeholders are request-unique, so an equal token prefix
+            # also means equal images. Never split one image's embeddings
+            # between the shared prefix and a row: cut back to its start.
+            for branch in branches:
+                for span_start, chunk in branch.media_spans:
+                    if span_start < prefix_len < span_start + chunk.n_tokens:
+                        prefix_len = span_start
+            prefix_pos = position_at(branches[0].media_spans, prefix_len)
             memory = self.context.memory
             # Start every request from an empty KV pool: prefix work never
             # persists across requests, so results cannot leak between callers.
             llama_cpp.llama_memory_clear(memory, True)
             decodes = 0
-            if prefix:
-                # One unchunked prefill decode on sequence 0. No logits are
-                # needed here; every scoring position lives in the suffixes.
-                self._decode_rows(llama_cpp, [(0, 0, prefix, False)])
-                decodes += 1
-            lengths = [len(ids) - len(prefix) for ids in sequences]
+            if prefix_len:
+                # One unchunked prefill decode on sequence 0 (plus one per image
+                # span). No logits are needed; scoring positions are in suffixes.
+                decodes += self._decode_range(llama_cpp, compiled, branches[0], 0, prefix_len, 0)
+            lengths = [len(ids) - prefix_len for ids in sequences]
             if max(lengths) > self.max_batch_tokens:
                 raise ValueError("A question suffix exceeds max_batch_tokens")
+            # Each row's suffix splits at the end of its last image: anything
+            # before that is decoded per row, the text after it is packed.
+            splits = [
+                max(
+                    [s + c.n_tokens for s, c in b.media_spans if s >= prefix_len],
+                    default=prefix_len,
+                )
+                for b in branches
+            ]
             # Longest first groups equal lengths together. Results carry branch
             # IDs, so execution order need not equal the original question order.
             pending = sorted(
@@ -493,26 +644,35 @@ class LlamaCppBackend:
                 limit = min(
                     self.max_batch_size,
                     self.max_batch_tokens // width if width else 1,
-                    max(1, (n_ctx - len(prefix)) // width) if width else 1,
+                    max(1, (n_ctx - prefix_len) // width) if width else 1,
                 )
                 batch, pending = pending[:limit], pending[limit:]
                 # Each row runs on its own sequence id sharing the prefix cells:
                 # the unified cache marks copied cells for both sequences, so
                 # attention sees prefix+suffix without recomputing the prefill.
-                if prefix:
-                    for row in range(len(batch)):
-                        llama_cpp.llama_memory_seq_cp(
-                            memory, 0, row + 1, 0, len(prefix)
+                for row, i in enumerate(batch):
+                    if prefix_len:
+                        llama_cpp.llama_memory_seq_cp(memory, 0, row + 1, 0, prefix_pos)
+                    if splits[i] > prefix_len:
+                        if stop.is_set():
+                            raise asyncio.CancelledError()
+                        decodes += self._decode_range(
+                            llama_cpp, compiled, branches[i], prefix_len, splits[i], row + 1
                         )
                 rows = [
-                    (row + 1, len(prefix), sequences[i][len(prefix):], True)
+                    (
+                        row + 1,
+                        position_at(branches[i].media_spans, splits[i]),
+                        sequences[i][splits[i]:],
+                        True,
+                    )
                     for row, i in enumerate(batch)
                 ]
                 flagged = self._decode_rows(llama_cpp, rows)
                 # One flagged output per row, in batch order: read exactly the
                 # permitted label logits and copy them to plain Python floats.
                 for row, i in enumerate(batch):
-                    branch = compiled.branches[i]
+                    branch = branches[i]
                     logits = llama_cpp.llama_get_logits_ith(
                         self.context.ctx, flagged[row]
                     )
@@ -530,31 +690,60 @@ class LlamaCppBackend:
                 decodes += 1
                 sizes.append(len(batch))
                 packed_tokens += sum(lengths[i] for i in batch)
-            return BackendResult(
-                results,
-                {
-                    "backend": "llama-cpp",
+            metrics = {
+                "backend": "llama-cpp",
+                "prefill_strategy": (
+                    "shared_prefix" if self.share_prefix else "per_branch"
+                ),
+                "prefix_tokens": prefix_len,
+                "suffix_batch_sizes": sizes,
+                "engine_forwards": decodes,
+                # These are distinct accounting views, not interchangeable:
+                # branch_prompt_tokens repeats shared context per branch;
+                # computed_prompt_tokens counts cells the engine filled;
+                # logical_prefill_tokens counts each branch's suffix once
+                # beyond the single shared prefix. Rows are packed without
+                # padding tokens, so the latter two views agree here.
+                "branch_prompt_tokens": sum(map(len, sequences)),
+                "computed_prompt_tokens": prefix_len + packed_tokens,
+                "logical_prefill_tokens": prefix_len + sum(lengths),
+                "padded_suffix_tokens": packed_tokens,
+                "branch_output_tokens": 0,
+                "scored_positions": len(sequences),
+                "backend_seconds": time.perf_counter() - start,
+            }
+            if multimodal:
+                shared = all(
+                    s + c.n_tokens <= prefix_len
+                    for b in branches for s, c in b.media_spans
+                )
+                metrics.update({
+                    # Every image is encoded once per request; "independent"
+                    # decodes those embeddings into each branch separately.
                     "prefill_strategy": (
-                        "shared_prefix" if self.share_prefix else "per_branch"
+                        "multimodal_shared_prefix" if shared else "multimodal_independent"
                     ),
-                    "prefix_tokens": len(prefix),
-                    "suffix_batch_sizes": sizes,
-                    "engine_forwards": decodes,
-                    # These are distinct accounting views, not interchangeable:
-                    # branch_prompt_tokens repeats shared context per branch;
-                    # computed_prompt_tokens counts cells the engine filled;
-                    # logical_prefill_tokens counts each branch's suffix once
-                    # beyond the single shared prefix. Rows are packed without
-                    # padding tokens, so the latter two views agree here.
-                    "branch_prompt_tokens": sum(map(len, sequences)),
-                    "computed_prompt_tokens": len(prefix) + packed_tokens,
-                    "logical_prefill_tokens": len(prefix) + sum(lengths),
-                    "padded_suffix_tokens": packed_tokens,
-                    "branch_output_tokens": 0,
-                    "scored_positions": len(sequences),
-                    "backend_seconds": time.perf_counter() - start,
-                },
-            )
+                    "vision_forwards": len(compiled.media.embeddings),
+                    "image_decodes": (
+                        len(branches[0].media_spans) if shared
+                        else sum(len(b.media_spans) for b in branches)
+                    ),
+                })
+            return BackendResult(results, metrics)
+
+
+def position_at(spans, index):
+    """Return the decoder position of token_ids[index] for a branch's image spans.
+
+    Text and non-M-RoPE images take one position per token; an M-RoPE image
+    (Qwen-VL family) takes chunk.n_pos positions for its n_tokens embeddings.
+    index must not fall inside an image span.
+    """
+    offset = 0
+    for start, chunk in spans:
+        if start + chunk.n_tokens <= index:
+            offset += chunk.n_tokens - chunk.n_pos
+    return index - offset
 
 
 # Request admission and response assembly
@@ -647,7 +836,11 @@ class LayaBackend:
         with self._lock:
             if stop.is_set():
                 raise asyncio.CancelledError()
-            if request.tools or request.mm_processor_kwargs:
+            if (
+                request.tools
+                or request.mm_processor_kwargs
+                or request.media_io_kwargs
+            ):
                 raise ValueError("Laya supports text state and text chat only")
             if request.options.raw_logits:
                 raise ValueError("Laya raw_logits diagnostics are not supported")
@@ -1052,6 +1245,8 @@ def resolve_gguf_path(model_name, revision, gguf_file=None):
         return str(path)
     if path.is_dir():
         matches = sorted(path.glob(gguf_file or "*.gguf"))
+        if not gguf_file:
+            matches = [m for m in matches if not is_mmproj(m.name)]
     else:
         if gguf_file:
             try:
@@ -1074,7 +1269,7 @@ def resolve_gguf_path(model_name, revision, gguf_file=None):
                 "or point --model at a local .gguf file"
             ) from exc
         root = Path(snapshot_download(model_name, revision=revision, allow_patterns=["*.gguf"]))
-        matches = sorted(root.glob("*.gguf"))
+        matches = [m for m in sorted(root.glob("*.gguf")) if not is_mmproj(m.name)]
         # Shards named <name>-00001-of-000NN.gguf are loaded as one model from
         # their first file; report the shard set, not each file, as the choice.
         shards = [m for m in matches if "-of-" in m.name]
@@ -1088,6 +1283,33 @@ def resolve_gguf_path(model_name, revision, gguf_file=None):
             f"Multiple .gguf files found for {model_name!r}; pass one file path"
         )
     return str(matches[0])
+
+
+def is_mmproj(filename):
+    """Vision projectors ship beside the text GGUF (e.g. mmproj-F16.gguf)."""
+    return Path(filename).name.lower().startswith("mmproj")
+
+
+def resolve_mmproj_path(mmproj, model_name, gguf_path, revision):
+    """Return a local vision-projector GGUF for --mmproj.
+
+    Accepts a local file path, a file name next to the resolved text GGUF (or
+    inside a local --model directory), or a file name in the --model Hugging
+    Face repository, which is then downloaded on its own.
+    """
+    candidate = Path(mmproj)
+    if candidate.is_file():
+        return str(candidate)
+    if Path(mmproj).name != mmproj or not mmproj.endswith(".gguf"):
+        raise ValueError("--mmproj must be a .gguf file path or a file name in the model repository")
+    for folder in (Path(gguf_path).parent, Path(model_name)):
+        if (folder / mmproj).is_file():
+            return str(folder / mmproj)
+    if Path(model_name).exists():
+        raise ValueError(f"--mmproj file {mmproj!r} was not found next to the model")
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo_id=model_name, filename=mmproj, revision=revision)
 
 
 def resolve_n_gpu_layers(device, n_gpu_layers):
@@ -1230,7 +1452,15 @@ class LlamaCppTokenizer:
         formatter = self._formatter(add_generation_prompt)
         if continue_final:
             messages, final = mark_final_message(messages, self._template)
-        rendered = formatter(messages=messages, **forward).prompt
+        try:
+            rendered = formatter(messages=messages, **forward).prompt
+        except ValueError as exc:
+            # llama-cpp-python's raise_exception() raises ValueError; surface it
+            # as Transformers does, a TemplateError, so render_chat can apply
+            # its strict-alternation fallback (e.g. Gemma 3) unchanged.
+            from jinja2.exceptions import TemplateError
+
+            raise TemplateError(str(exc)) from exc
         if continue_final:
             rendered = cut_at_final_message(rendered, final)
         return rendered
@@ -1436,6 +1666,11 @@ def load_service(
     served_model_name=None,
     enforce_model_id=False,
     max_choice_options=255,
+    mmproj=None,
+    max_image_width=None,
+    max_image_height=None,
+    default_image_max_width=None,
+    default_image_max_height=None,
 ):
     """Load a model and return a ready-to-use service, without starting HTTP.
 
@@ -1454,6 +1689,9 @@ def load_service(
     model_name); with enforce_model_id, requests must name it.
     chat_template_file replaces the GGUF's embedded tokenizer.chat_template,
     e.g. when a file was converted with an outdated template.
+    mmproj names the model's GGUF vision projector (see resolve_mmproj_path)
+    and enables image chat through llama.cpp's libmtmd. The image resize
+    options bound decoded images before the projector's own preprocessing.
 
     The GGUF vocabulary, chat template, prompt policy, and Choice label capacity
     are validated from a vocabulary-only load before any weights are loaded:
@@ -1463,6 +1701,14 @@ def load_service(
     thread lock also prevents overlap if cancellation releases admission
     before a decode ends.
     """
+    from hf_vision import validate_image_resize_config
+    validate_image_resize_config(max_image_width, max_image_height,
+                                 default_image_max_width, default_image_max_height)
+    if backend == 'laya' and any(value is not None for value in (
+            max_image_width, max_image_height, default_image_max_width, default_image_max_height)):
+        raise ValueError('Image resize options require --backend llama-cpp')
+    if backend == 'laya' and mmproj is not None:
+        raise ValueError('--mmproj requires --backend llama-cpp; Laya is text-only')
     validate_rope_factor(rope_factor)
     if prompt_policy is not None:
         validate_policy(prompt_policy)
@@ -1538,6 +1784,11 @@ def load_service(
         else None
     )
     gguf_path = resolve_gguf_path(model_name, revision, gguf_file)
+    # Resolve (and download) the projector before any weights load.
+    mmproj_path = (
+        resolve_mmproj_path(mmproj, model_name, gguf_path, revision)
+        if mmproj is not None else None
+    )
     # A vocabulary-only load reads the tokenizer and chat template without any
     # weights, so an unusable template, policy, or label capacity fails fast.
     vocab_params = llama_cpp.llama_model_default_params()
@@ -1612,6 +1863,17 @@ def load_service(
     except BaseException:
         model.close()
         raise
+    vision = None
+    if mmproj_path is not None:
+        from hf_vision import MtmdVision
+
+        try:
+            # The projector follows the text weights: GPU when any layer is offloaded.
+            vision = MtmdVision(mmproj_path, model.model, use_gpu=resolved_layers != 0)
+        except BaseException:
+            context.close()
+            model.close()
+            raise
     # PromptCompiler's default comes from common.DEFAULT_TEMPLATE_VERSION.
     # Keep one compiler/backend pair for the service's loaded model/context.
     compiler = PromptCompiler(
@@ -1619,6 +1881,11 @@ def load_service(
         max_tokens=max_model_len,
         prompt_policy=prompt_policy,
         max_choice_options=max_choice_options,
+        vision=vision,
+        max_image_width=max_image_width,
+        max_image_height=max_image_height,
+        default_image_max_width=default_image_max_width,
+        default_image_max_height=default_image_max_height,
     )
     compiler.validate_choice_capacity()
     backend = LlamaCppBackend(
@@ -1627,6 +1894,7 @@ def load_service(
         max_batch_size=max_batch_size,
         max_batch_tokens=max_batch_tokens,
         share_prefix=share_prefix,
+        vision=vision,
     )
     return DecisionService(
         public_model,
@@ -1640,6 +1908,12 @@ def load_service(
             "backend": "llama-cpp",
             "prompt_policy": prompt_policy,
             "prompt_policy_selection": policy_selection,
+            "image_input": vision is not None,
+            "mmproj_path": mmproj_path,
+            "max_image_width": max_image_width,
+            "max_image_height": max_image_height,
+            "default_image_max_width": default_image_max_width,
+            "default_image_max_height": default_image_max_height,
             "model_revision": revision,
             "gguf_path": gguf_path,
             "chat_template_source": chat_template_file or "gguf",
@@ -1702,6 +1976,19 @@ def main():
         help="llama.cpp layer offload count; -1 for all, overrides --device",
     )
     parser.add_argument("--max-model-len", type=int, default=16384)
+    parser.add_argument(
+        "--mmproj",
+        help="GGUF vision projector enabling image chat: a path, or a file name "
+             "next to the model / in the --model Hugging Face repository",
+    )
+    parser.add_argument("--max-image-width", type=int, default=None,
+                        help="Hard preprocessor image width cap; downscale preserving aspect ratio (default: unset)")
+    parser.add_argument("--max-image-height", type=int, default=None,
+                        help="Hard preprocessor image height cap; downscale preserving aspect ratio (default: unset)")
+    parser.add_argument("--default-image-max-width", type=int, default=None,
+                        help="Default image resize width, overridable per request within the hard cap (default: hard cap)")
+    parser.add_argument("--default-image-max-height", type=int, default=None,
+                        help="Default image resize height, overridable per request within the hard cap (default: hard cap)")
     parser.add_argument("--max-batch-size", type=int, default=32)
     parser.add_argument("--max-batch-tokens", type=int, default=32768)
     parser.add_argument("--max-request-branches", type=int, default=100)

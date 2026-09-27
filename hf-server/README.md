@@ -121,7 +121,7 @@ simple-jev --model /models/Qwen3.8-27B-Q4_K_M.gguf --device auto --dtype bfloat1
   --max-request-branches 256 --max-model-len 32768 --max-choice-options 255
 ```
 
-This Qwen configuration automatically selects `examples_binary` when no prompt
+This Qwen configuration automatically selects `shared_examples_binary` when no prompt
 format is specified. Three 255-choice questions consume three branches, not 765.
 The limits do not guarantee that all maxima fit simultaneously: long options and
 policy repetition increase input length. Violations return 422; candidates/context
@@ -171,16 +171,29 @@ Explicit selection always overrides auto-selection. In particular, explicit
 
 ```bash
 simple-jev --model /models/Qwen3.8-27B-Q4_K_M.gguf --device auto \
-  --classifier-prompt-policy examples_binary
+  --classifier-prompt-policy shared_examples_binary
 ```
 
-| Reference model (any GGUF conversion of it) | Policy |
-|---|---|
-| Qwen/Qwen3.8-27B | `examples_binary` |
-| Qwen/Qwen3.6-35B-A3B | `repeat_state` |
-| Qwen/Qwen3.5-4B | `strict_mix_repeat2` |
-| google/gemma-4-26B-A4B-it | `strict_mix_repeat2` |
-| google/gemma-4-12B-it | `strict_mix_repeat2` |
+| Reference model (any GGUF conversion of it) | Sharing-constrained policy | Native development correct /477 |
+|---|---|---:|
+| Qwen/Qwen3.8-27B | `shared_examples_binary` |445|
+| Qwen/Qwen3.6-35B-A3B | `shared_repeat_state` |432|
+| Qwen/Qwen3.5-4B | `shared_examples_binary` |374|
+| google/gemma-4-26B-A4B-it | `shared_examples_binary` |437|
+| google/gemma-4-12B-it | `shared_repeat_state` |427|
+
+`shared_examples_binary` and `shared_repeat_state` keep system instructions and
+native thinking flags uniform across mixed-type question branches. Type-specific
+instructions follow shared state/chat. State repetition stays in the shared
+prefix; chat turns are not duplicated. Both support text and [image chat](VISION.md) `messages`.
+The experimental explicit-only `universal_shared` moves universal rules and the
+complete labelled question catalogue before state/chat; only the selected ID and
+answer prefix follow it, with no fixed thinking prefill. It remains an experimental
+replay/tuning option, not an automatic recommendation. These development selections
+reuse the quick477 cases; they are not fresh held-out benchmark scores.
+
+Legacy formats remain explicit options for reproduction, but are excluded from
+default tuning because mixed-type system instructions can defeat context sharing:
 
 - `examples_binary`: strict decision rules, worked examples, raw text/pretty
   JSON state once, and binary no/yes Noul scoring.
@@ -188,9 +201,12 @@ simple-jev --model /models/Qwen3.8-27B-Q4_K_M.gguf --device auto \
 - `strict_mix_repeat2`: strict rules, the entire user block twice, and the
   evaluated nine-bin Noul wording/scoring. No extra worked-example block.
 
-The three named policies accept **text/JSON `state` only**, not `messages`;
-use `baseline` to preserve text chat turns. The server still rejects images/tools.
-Choice branches prefill three fixed `[thinking]` lines through the model's native
+The three legacy policies above accept **text/JSON `state` only**, not `messages`;
+use `baseline` or a shared format to preserve chat turns. When the server is
+started with the model's vision projector (`--mmproj`), chat may also carry
+[image inputs](VISION.md); each image is encoded once per request and its
+prefill is shared when the compiled context is shared. Tools remain unsupported.
+Except for baseline/universal_shared, Choice branches prefill three fixed `[thinking]` lines through the model's native
 chat template; Score/Noul branches answer directly. This does not generate
 reasoning or output tokens. A template that drops the fixed prefill is rejected.
 Binary Noul returns `{"type":"noul","noul":P(yes)}` in [0,1], with no nine-bin
@@ -210,8 +226,10 @@ python eval/prompt_search.py --model /models/YOUR_MODEL.gguf --device auto \
 ```
 
 Run this from the repository root in the server environment after preparing the
-quick datasets. It evaluates all four formats sequentially with native scoring;
-apply the winner explicitly. Repeated-input policies need enough context (32K
+quick datasets. By default it evaluates baseline and the two sharing-compatible
+named formats with native scoring. `--all-formats` opts into all seven formats,
+including legacy and experimental candidates; `--policies` selects an explicit
+subset. Apply the winner explicitly. Repeated-input policies need enough context (32K
 fits the checked 255-option case), and larger requests use more memory.
 
 Named policies pass text blocks to the model's native template while
@@ -226,13 +244,15 @@ Repetition consumes additional context; the complete rendered branch remains
 subject to `--max-model-len`. Advanced metadata identifies
 `hf-<policy>-v1` instead of the baseline `v1` template.
 
-This is a prompt/scoring-adapter addition only: the llama.cpp context, KV cache
-reuse, batching, locking, admission and inference code are unchanged. Loading
-gains the header fingerprint, a vocabulary-only probe, and the startup compile
-check below. No worker, stream, kernel, or other performance optimizations are
-included. Laya keeps its native formatting and rejects non-baseline prompt
-policies at startup. Implementation: `hf_prompt_policies.py` (upstream's module,
-unmodified), packaged alongside `hf_server.py`.
+Named prompt formats change prompt/scoring adapters, not model precision or
+execution controls: the llama.cpp context, KV cache reuse, batching, locking,
+admission and inference code are shared by every format. Loading gains the header
+fingerprint, a vocabulary-only probe, and the startup compile check below.
+Image-specific loading and decoding are described in [VISION.md](VISION.md). No
+worker, stream, kernel, or other performance optimizations are included. Laya
+keeps its native formatting and rejects non-baseline prompt policies at startup.
+Implementation: `hf_prompt_policies.py` (upstream's module, unmodified),
+packaged alongside `hf_server.py`.
 
 ### Chat templates
 
@@ -255,6 +275,11 @@ and advanced metadata reports `chat_template_source`. Otherwise choose another
 `--classifier-prompt-policy`; `baseline` works with any chat template.
 
 ## Shared-prefix execution
+
+Image requests follow the same flow: image embeddings (encoded once per request
+by the vision projector) occupy their expanded token positions in the prefix, a
+shared prefix is never cut inside an image, and the text after each branch's last
+image is packed like any other suffix; see [VISION.md](VISION.md).
 
 The compiler calls `common.prepare_prompt(request, version="v1")`, assembles the
 returned strings with state/chat roles, and applies the GGUF chat template.
@@ -300,8 +325,13 @@ for one.
 
 ## Precision notes
 
-The CPU backend is the numerical reference: on it, shared-prefix scores equal
-independent full-prompt decodes bit-for-bit (verified by the backend tests).
+The CPU backend is the numerical reference: on it, a branch decoded with the same
+partition as an independent full-prompt decode matches it bit-for-bit (verified
+by the backend and image tests). llama.cpp's CPU kernels are not batch-invariant,
+though: packing rows together or splitting a prompt differently (shared prefix
+plus a short suffix) can change rounding for longer prompts, by up to ~0.6 logits
+measured on Qwen3-VL-2B-Q8_0 with ~500-token branches, for text and image
+requests alike (see [VISION.md](VISION.md#numerical-behavior)).
 GPU backends add kernel-level floating-point differences: on the Vulkan builds
 validated here, per-logit deviations up to roughly 0.1 versus CPU were observed
 even with a `float32` KV cache, and `float16` KV adds its own rounding. Answers
@@ -330,12 +360,27 @@ llama-cpp-python's log callback.
 
 ## Scope and validation
 
-This reference currently accepts **text only**, including text messages.
-Images, audio, video and tool calls are rejected. A multimodal GGUF does not
-imply multimodal input support. Models must be GGUF files with a
-`tokenizer.chat_template` and single-token rating/choice labels at the assistant
-boundary. Recurrent and hybrid architectures are accepted and default to
-per-branch prefill, described in
+This reference accepts text and **image chat**. Image input needs the GGUF
+vision projector that matches the text model (`--mmproj`, e.g. `mmproj-F16.gguf`
+from the same repository) and runs through llama.cpp's libmtmd, so any projector
+family llama.cpp supports can be used: Qwen2/2.5/3-VL and Qwen3.5 (M-RoPE),
+Gemma 3 (non-causal image attention), SmolVLM/Idefics3 (tiled images), LLaVA-style
+projectors and more. Images may be inline PNG/JPEG/WebP data URLs or bounded public
+HTTP(S) URLs. Audio, video and tools are rejected. See [transport security,
+limits, decoding and numerical behavior](VISION.md). Without `--mmproj`, image
+requests return HTTP 422.
+
+Optional `--max-image-width` / `--max-image-height` set hard **resize** caps before
+the projector's own preprocessing. `--default-image-max-width` /
+`--default-image-max-height` set request defaults; `media_io_kwargs.image.max_width/max_height`
+overrides them within the hard caps. Oversized images are downscaled to fit,
+preserving aspect ratio—not rejected for exceeding these dimensions. Original
+safety limits still apply, and the projector may subsequently resize/pad to its
+required grid.
+
+Models must be GGUF files with a `tokenizer.chat_template` and single-token
+rating/choice labels at the assistant boundary. Recurrent and hybrid
+architectures are accepted and default to per-branch prefill, described in
 [Recurrent and hybrid architectures](#recurrent-and-hybrid-architectures).
 Arbitrary model compatibility is not guaranteed.
 
@@ -352,6 +397,13 @@ shared-prefix scores against independent full-prompt decodes on the real engine
 and run end-to-end HTTP checks, including discovery and a 64-option Choice.
 `SIMPLE_JEV_DEVICE` (default `cpu`) pins the device for those runs. They
 establish execution equivalence, not answer quality.
+Image tests (`tests/test_llama_vision.py`) cover marker rendering, per-image
+spans, label boundaries, M-RoPE positions, once-per-request encoding, both
+prefill strategies, loading and HTTP against a stubbed projector and engine; with
+`SIMPLE_JEV_MMPROJ` also set, they compare the compiler's token layout with
+`mtmd_tokenize` and the backend's scores with llama.cpp's own
+`mtmd_helper_eval_chunks` evaluation (see [VISION.md](VISION.md#validation-scope)).
+Image-validation, resize and public-URL download tests come from upstream unchanged.
 
 ```bash
 python -m pytest -c hf-server/pyproject.toml common/tests hf-server/tests -q

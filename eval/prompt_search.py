@@ -26,7 +26,11 @@ from presets import suite_paths, describe
 from suites import load_suite, evaluator_hashes
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICIES = ('baseline', 'examples_binary', 'repeat_state', 'strict_mix_repeat2')
+# Default tuning is sharing-compatible. Broader searches require explicit opt-in.
+POLICIES = ('baseline', 'shared_examples_binary', 'shared_repeat_state')
+ALL_POLICIES = ('baseline', 'examples_binary', 'repeat_state', 'strict_mix_repeat2',
+                'shared_examples_binary', 'shared_repeat_state', 'universal_shared')
+SHARING_POLICIES = POLICIES + ('universal_shared',)
 COUNTS = {'jevbench-public': 231, 'semif-authored': 144, 'semif-typesafe': 102}
 
 
@@ -110,6 +114,8 @@ def comparison(results, policies):
     tied = [r['policy'] for r in complete if r['correct'] == best]
     finished = len(results) == len(policies) and len(complete) == len(policies)
     return {'complete': finished, 'selection_metric': 'pooled native correct / 477',
+            'sharing_compatible_only': all(p in SHARING_POLICIES for p in policies),
+            'nonshared_policies': [p for p in policies if p not in SHARING_POLICIES],
             'development_selection_not_held_out': True,
             'recommended_policy': tied[0] if finished else None,
             'best_complete_policies': tied, 'tie_break': 'requested policy order',
@@ -240,7 +246,11 @@ def parser():
     p.add_argument('--chat-template-file', type=Path,
                    help="Jinja template replacing the GGUF's embedded chat template")
     p.add_argument('--output', type=Path, help='New directory; never overwritten or resumed')
-    p.add_argument('--policies', nargs='+', choices=POLICIES, default=list(POLICIES))
+    scope = p.add_mutually_exclusive_group()
+    scope.add_argument('--policies', nargs='+', choices=ALL_POLICIES,
+                       help='Explicit subset; may include legacy non-sharing formats')
+    scope.add_argument('--all-formats', action='store_true',
+                       help='Opt in to all formats, including legacy non-sharing formats')
     p.add_argument('--list', action='store_true', help='Offline plan only; no model loads/downloads')
     p.add_argument('--device', default='auto', help='cpu, or auto/gpu/vulkan to offload all layers')
     p.add_argument('--n-gpu-layers', type=int, help='Explicit llama.cpp layer offload; overrides --device')
@@ -266,6 +276,8 @@ def interrupt_search(signum, frame):
 
 def main(argv=None):
     p = parser(); args = p.parse_args(argv)
+    if args.policies is None:
+        args.policies = list(ALL_POLICIES if args.all_formats else POLICIES)
     if len(set(args.policies)) != len(args.policies):
         p.error('Policies must be unique')
     if not 1 <= args.port <= 65535 or any(not math.isfinite(v) or v <= 0 for v in (
@@ -274,6 +286,8 @@ def main(argv=None):
         p.error('Limits and timeouts must be positive; port must be 1..65535')
     if args.list:
         print(json.dumps({'model': args.model, 'policies': args.policies,
+                          'sharing_compatible_only': all(policy in SHARING_POLICIES for policy in args.policies),
+                          'nonshared_policies': [policy for policy in args.policies if policy not in SHARING_POLICIES],
                           'suites': describe(suite_paths('quick')),
                           'commands': [server_command(args, policy, '<unique-search-id>') for policy in args.policies]}, indent=2))
         return 0

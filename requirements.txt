@@ -6,6 +6,7 @@ uvicorn
 numpy
 jinja2
 huggingface-hub
+Pillow>=10.4
 
 # Test dependencies.
 pytest

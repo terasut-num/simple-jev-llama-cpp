@@ -8,7 +8,7 @@ name = "simple-jev"
 version = "0.1.0"
 description = "Standalone llama.cpp shared-prefix classifier API for GGUF models"
 requires-python = ">=3.12"
-dependencies = ["llama-cpp-python>=0.3.35", "pydantic>=2", "fastapi", "uvicorn", "numpy", "jinja2"]
+dependencies = ["llama-cpp-python>=0.3.35", "pydantic>=2", "fastapi", "uvicorn", "numpy", "jinja2", "Pillow>=10.4"]
 
 # Both this command and python -m hf_server call the same entry point.
 [project.scripts]
@@ -23,7 +23,7 @@ test = ["pytest", "pytest-asyncio", "httpx"]
 # Include the shared modules in the wheel without introducing a separate
 # common distribution. Build/install from a checkout containing both folders.
 [tool.setuptools]
-py-modules = ["hf_server", "hf_prompt_policies"]
+py-modules = ["hf_server", "hf_prompt_policies", "hf_vision", "hf_media"]
 packages = ["common"]
 package-dir = {"" = ".", common = "../common"}
 
