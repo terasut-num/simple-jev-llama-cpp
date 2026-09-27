@@ -103,12 +103,8 @@ def prepare_policy(request, version, policy, *, extended_choice_labels=()):
         surrogate = request.model_copy(update={'questions': questions})
     plan = prepare_prompt(surrogate, version=version, extended_choice_labels=extended_choice_labels)
     if policy == 'strict_mix_repeat2':
-        questions = tuple(replace(q, instruction=q.instruction.replace(
-            ' Encode probability with 0.1 being the lowers, and 0.9 as the highest',
-            ' Encode probability 0.1 as 1, 0.2 as 2, and so on through 0.9 as 9.',
-        )) if request.questions[q.question_id].type == 'noul' else q for q in plan.questions)
         system = NOUL_SYSTEM if all(q.type == 'noul' for q in request.questions.values()) else plan.system_prompt_prefix
-        plan = replace(plan, questions=questions, system_prompt_prefix=system)
+        plan = replace(plan, system_prompt_prefix=system)
     return replace(plan, template_version=f'hf-{policy}-v1'), binary_keys
 
 
