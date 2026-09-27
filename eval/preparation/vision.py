@@ -33,7 +33,7 @@ def main():
     p.add_argument('suite',choices=choices)
     a=p.parse_args()
     config_path=ROOT/'vendor/vision'/f'{a.suite}.json'
-    cfg=json.loads(config_path.read_text());out=ROOT/'data'/a.suite
+    cfg=json.loads(config_path.read_text(encoding='utf-8'));out=ROOT/'data'/a.suite
     if out.exists(): p.error('Output exists; preserve completed data or remove an incomplete preparation before retrying')
     from datasets import load_dataset
     from PIL import ImageOps
@@ -42,7 +42,7 @@ def main():
     if ds.features[cfg['label_column']].names!=cfg['source_labels']: raise ValueError('Source class mapping changed')
     (out/'images').mkdir(parents=True)
     counts={name:0 for name in cfg['source_labels']};total=0
-    with (out/'rows.jsonl').open('x') as output:
+    with (out/'rows.jsonl').open('x', encoding='utf-8', newline='\n') as output:
         for index in range(len(ds)):
             example=ds[index]
             source_label=example[cfg['label_column']]
@@ -60,7 +60,7 @@ def main():
           'config_sha256':hashlib.sha256(config_path.read_bytes()).hexdigest(),
           'preparer_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
           'versions':{name:importlib.metadata.version(name) for name in ['datasets','Pillow']}}
-    (out/'provenance.json').write_text(json.dumps(meta,indent=2)+'\n')
+    (out/'provenance.json').write_text(json.dumps(meta,indent=2)+'\n', encoding='utf-8', newline='\n')
     print(f'Prepared {total} images in {out}; no inference performed')
 
 

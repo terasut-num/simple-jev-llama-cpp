@@ -37,8 +37,8 @@ class ExecutionTests(unittest.TestCase):
                 self.assertEqual(request.call_count,4)
                 # Simulate interruption after two durably saved predictions.
                 path=Path(tmp)/suite['id']/'predictions.jsonl'
-                lines=path.read_text().splitlines()
-                path.write_text('\n'.join(lines[:2])+'\n')
+                lines=path.read_text(encoding='utf-8').splitlines()
+                path.write_text('\n'.join(lines[:2])+'\n', encoding='utf-8', newline='\n')
                 args.resume=True
                 second=run.run_suite(args,'fake-key',suite,adapter,source,rows)
                 self.assertEqual(request.call_count,6)
@@ -87,6 +87,6 @@ class ExecutionTests(unittest.TestCase):
                 self.assertEqual(result[suite['id']]['failed_rows'],0)
                 retry_run(Path(tmp),'fake-key')
                 self.assertEqual(request.call_count,1)
-            records=[json.loads(l) for l in (Path(tmp)/suite['id']/'predictions.jsonl').read_text().splitlines()]
+            records=[json.loads(l) for l in (Path(tmp)/suite['id']/'predictions.jsonl').read_text(encoding='utf-8').splitlines()]
             self.assertEqual(records[0]['prior_results'][0]['http_status'],520)
             self.assertNotIn('prior_results',records[1])

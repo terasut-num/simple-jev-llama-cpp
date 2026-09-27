@@ -14,13 +14,13 @@ ROOT=Path(__file__).resolve().parent
 
 def entries():
     for path in sorted(ROOT.glob('suites/**/*.json')):
-        suite = json.loads(path.read_text())
+        suite = json.loads(path.read_text(encoding='utf-8'))
         if not suite.get('catalog_alias'):
             yield path, suite
 
 
 def render(category=None,language_group=None):
-    taxonomy=json.loads((ROOT/'taxonomy.json').read_text())['categories']
+    taxonomy=json.loads((ROOT/'taxonomy.json').read_text(encoding='utf-8'))['categories']
     lines=['# Evaluation catalog','',
            'Each eval has one placement: modality → language → task category → task type.',
            'Text categories separate **Model knowledge**, **Classification / decision**, and **Ranking — supplied context**.',
@@ -106,7 +106,7 @@ def render_projects():
 
 
 def main():
-    taxonomy=json.loads((ROOT/'taxonomy.json').read_text())
+    taxonomy=json.loads((ROOT/'taxonomy.json').read_text(encoding='utf-8'))
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--category',choices=list(taxonomy['categories']))
     p.add_argument('--language-group',choices=['english','non-english','multilingual'])
@@ -117,8 +117,8 @@ def main():
     if a.view=='project' and (a.category or a.language_group): p.error('Project view does not accept category filters')
     text=render_projects() if a.view=='project' else render(a.category,a.language_group)
     if a.write_doc:
-        (ROOT/'notes/EVAL_CATALOG.md').write_text(render())
-        (ROOT/'notes/PROJECT_CATALOG.md').write_text(render_projects())
+        (ROOT/'notes/EVAL_CATALOG.md').write_text(render(), encoding='utf-8', newline='\n')
+        (ROOT/'notes/PROJECT_CATALOG.md').write_text(render_projects(), encoding='utf-8', newline='\n')
     else: print(text)
 
 

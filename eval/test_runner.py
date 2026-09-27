@@ -40,12 +40,12 @@ class SuiteTests(unittest.TestCase):
             root = Path(directory)
             row = {'id':'one','group_id':'one','family':'f','state':'x','question':'?',
                    'label':0,'options':[{'id':'a','description':'a'},{'id':'b','description':'b'}]}
-            (root/'data.jsonl').write_text(json.dumps(row)+'\n')
+            (root/'data.jsonl').write_text(json.dumps(row)+'\n', encoding='utf-8', newline='\n')
             manifest = {'schema_version':1,'id':'custom','version':'1','adapter':'choice-v1','dataset':'data.jsonl'}
             path = root/'suite.json'
-            path.write_text(json.dumps(manifest))
+            path.write_text(json.dumps(manifest), encoding='utf-8', newline='\n')
             self.assertEqual(load_suite(path)[3], [row])
             manifest['id'] = '../escape'
-            path.write_text(json.dumps(manifest))
+            path.write_text(json.dumps(manifest), encoding='utf-8', newline='\n')
             with self.assertRaises(ValueError):
                 load_suite(path)

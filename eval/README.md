@@ -39,19 +39,26 @@ python eval/prompt_search.py --model ORG/MODEL-GGUF --gguf-file MODEL-Q4_K_M.ggu
 ```
 
 The search always passes explicit policies; server auto-selection cannot influence
-which candidate is tested. Defaults: `baseline examples_binary repeat_state
-strict_mix_repeat2`, 477 decisions each, workers=1, no request retries, 32K context,
+which candidate is tested. Defaults: `baseline shared_examples_binary shared_repeat_state`
+(context-sharing-compatible formats), 477 decisions each, workers=1, no request retries, 32K context,
 255-option limit. Remote branches/revisions are resolved once to an immutable
 commit before loading weights; offline mode requires the cached `--gguf-file`
 (or `config.json`) for that revision. Local `.gguf` files and GGUF directories
 are recorded by path and size in `search.json` and must be kept unchanged during
 the search. Pass `--revision COMMIT` to reproduce a specific checkpoint.
 
-- `--policies baseline examples_binary` searches a subset; tied best formats use
-  this order. The default prefers baseline on ties.
-- `--device cpu --dtype float32` supports CPU testing (numerically anchored
-  llama.cpp scoring); four full quick runs can be slow. The model is reloaded once
-  per format. `--dtype` is the KV-cache type; GGUF weights keep their quantization.
+- `--all-formats` explicitly includes all seven formats, including experimental
+  `universal_shared` (universal rules and the full question catalogue before context)
+  and legacy
+  `examples_binary`, `repeat_state`, and `strict_mix_repeat2`, which can break
+  common-prefix sharing across mixed question types. This does not change server
+  auto-selection defaults. Reports identify unrestricted searches.
+- `--policies baseline shared_examples_binary` searches a subset; an explicit
+  subset may also include legacy formats. It cannot be combined with `--all-formats`.
+  Tied best formats use the requested order; the default prefers baseline on ties.
+- `--device cpu --dtype float32` supports CPU testing when the model supports it;
+  full quick runs can be slow. The model is reloaded once per format.
+- `--dtype` is the KV-cache type; GGUF weights keep their quantization.
 - `--gguf-file`, `--n-gpu-layers`, `--prefix-sharing` (default `auto`), and
   `--chat-template-file` are passed unchanged to every format's server, so all
   formats run the same weights, offload, prefill strategy, and chat template. A

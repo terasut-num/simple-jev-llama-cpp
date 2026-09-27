@@ -31,7 +31,7 @@ def verify_evaluator(manifest):
 
 def load_suite(path, override=None):
     path = Path(path)
-    suite = json.loads(path.read_text())
+    suite = json.loads(path.read_text(encoding='utf-8'))
     if suite.get('schema_version') != 1:
         raise ValueError('Unsupported suite schema version')
     if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', suite['id']):

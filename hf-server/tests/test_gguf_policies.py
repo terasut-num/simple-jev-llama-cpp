@@ -279,12 +279,14 @@ class NoReasoning(NativeTokenizer):
         return "\n".join(f"{m['role']}: {m['content'][0]['text']}" for m in messages)
 
 
-@pytest.mark.parametrize("requested", [None, "strict_mix_repeat2"])
-def test_startup_probe_rejects_template_that_cannot_serve_policy(monkeypatch, requested):
+# None auto-selects the Qwen dense 4B profile's shared_examples_binary format.
+@pytest.mark.parametrize("requested,policy", [(None, "shared_examples_binary"),
+                                              ("strict_mix_repeat2", "strict_mix_repeat2")])
+def test_startup_probe_rejects_template_that_cannot_serve_policy(monkeypatch, requested, policy):
     created = fake_gguf_loader(monkeypatch, NoReasoning(), QWEN35_4B_GGUF)
     with pytest.raises(ValueError, match="--chat-template-file") as error:
         load_service("model.gguf", prompt_policy=requested, max_choice_options=50)
-    assert "strict_mix_repeat2" in str(error.value)
+    assert policy in str(error.value)
     assert "did not preserve" in str(error.value)
     assert [m.vocab_only for m in created.models] == [True]  # No weights loaded.
     service = load_service("model.gguf", prompt_policy="baseline", max_choice_options=50)

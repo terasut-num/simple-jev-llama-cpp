@@ -101,12 +101,12 @@ coercion.
 | --- | --- | --- | --- |
 | `model` | string | Required; nonempty | Any nonempty ID is accepted by default. With `--enforce-model-id`, it must match the served name. The HTTP request does not load or switch models. |
 | `state` | string, object, array, or null | Supply exactly one non-null `state` or `messages` | Shared context. Objects/arrays are serialized into prompt text; they are not executable state. A top-level number or boolean is not supported. |
-| `messages` | array of messages or null | Alternative to `state`; at least one message | Text chat history rendered with the model's chat template. |
+| `messages` | array of messages or null | Alternative to `state`; at least one message | Text/image chat history rendered with the model's native template; see [image support](VISION.md). |
 | `questions` | object mapping IDs to questions | Required; 1–256 entries at schema level | IDs must be nonempty strings. The server's branch limit is additionally enforced, default 100. |
 | `options` | object | Defaults shown below | Response diagnostics; prompt/scoring rules are fixed by v1. |
 | `tools` | array of objects or null | Omitted/null | Reserved in the schema; nonempty values are rejected by this implementation. |
 | `mm_processor_kwargs` | object or null | Omitted/null | Reserved; nonempty values are rejected. |
-| `media_io_kwargs` | object of objects or null | Omitted/null | Reserved; nonempty values are rejected. |
+| `media_io_kwargs` | object of objects or null | Omitted/null | llama.cpp: `{"image":{"max_width":1024,"max_height":768}}` resizes images to fit, preserving aspect ratio. Positive integers override server defaults, clamped to server hard caps. Other keys are rejected; Laya rejects nonempty values. |
 
 Empty reserved containers are accepted but have no effect. Omit them normally.
 Explicit `null` does not count as supplied context. An empty string or empty JSON
@@ -120,12 +120,22 @@ For this implementation each message contains only:
 | Field | Supported value |
 | --- | --- |
 | `role` | `system`, `developer`, `user`, or `assistant` |
-| `content` | String, including an empty string |
+| `content` | String (including empty), or text/image_url blocks; images in user turns only |
 
-The shared schema also describes `tool`/`function` roles, null content, content
-part arrays and extra message fields. **The GGUF compiler rejects these.** Images,
-audio, video, tool calls, `name`, and other extra message properties are not
-supported. A model's chat template may further restrict roles or their order.
+Text blocks use `{"type":"text","text":"..."}`. Image blocks use
+`{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`.
+The URL may also be public HTTP(S), for example
+`{"type":"image_url","image_url":{"url":"https://example.com/photo.jpg"}}`.
+Image blocks need a server started with the model's GGUF vision projector
+(`--mmproj`); without it they return 422. See [image support and limits](VISION.md)
+for projector families, JPEG/WebP, multiple images, prefix reuse, and validation scope. Downloads enforce byte/time limits, standard
+HTTP(S) ports, public-IP-only DNS pinning, TLS verification and redirect checks;
+private-network URLs, URL userinfo and local paths are rejected. Ambient proxies
+and cookies are never used.
+
+`tool`/`function` roles, null content, audio/video blocks, tool calls, `name`, and
+other extra message properties are rejected. A model's chat template may further
+restrict roles or their order.
 
 For chat input replace `state` in the example with:
 
@@ -277,6 +287,9 @@ values), `probabilities` (nine values), `expected_score`, `variance`, and `entro
 | `metadata.stateful_architecture` | True when the model reports recurrent or hybrid state (`llama_model_is_recurrent` / `llama_model_is_hybrid`). Such models carry rolling state rather than per-position KV cells. |
 | `metadata.prefix_sharing` | True when branches share prefix KV cells, false when each branch prefills its own complete prompt. Resolved from `--prefix-sharing` and `metadata.stateful_architecture`. |
 | `metadata.rope_factor` | Startup `--rope-factor`. |
+| `metadata.image_input` | True when a vision projector (`--mmproj`) is loaded and image chat is accepted. |
+| `metadata.mmproj_path` | Resolved local projector GGUF path, or null. |
+| `metadata.max_image_width`, `metadata.max_image_height`, `metadata.default_image_max_width`, `metadata.default_image_max_height` | Startup image resize bounds (null when unset). |
 | `metadata.template_version` | The resolved template version: `v1` for baseline, `hf-<policy>-v1` for a named format. |
 | `metadata.calibration` | `not_calibrated` |
 | `metadata.usage_accounting` | `unique_token_prefixes_and_engine_leaf_outputs` (legacy identifier). |
@@ -286,11 +299,13 @@ values), `probabilities` (nine values), `expected_score`, `variance`, and `entro
 | Field | Meaning |
 | --- | --- |
 | `backend` | `llama-cpp` |
-| `prefill_strategy` | `shared_prefix`, or `per_branch` when prefix sharing is disabled and every branch prefills its own complete prompt. |
-| `prefix_tokens` | Length of the shared prefix actually decoded once. At least one token is left for each suffix, even for identical prompts. `0` under `per_branch`. |
+| `prefill_strategy` | Text: `shared_prefix`, or `per_branch` when prefix sharing is disabled and every branch prefills its own complete prompt. Images: `multimodal_shared_prefix` when every image span lies in the shared prefix, else `multimodal_independent` (each branch decodes the request's once-encoded image embeddings itself). |
+| `prefix_tokens` | Length of the shared prefix actually decoded once, counting expanded image tokens. At least one token is left for each suffix, even for identical prompts; an image span is never split. `0` under `per_branch`. |
+| `vision_forwards` | Image requests only: projector encodes, one per image chunk per request (a tiling projector can emit several chunks per image), never per question. |
+| `image_decodes` | Image requests only: image-embedding decodes into the KV cache; one per image for a shared prefix, one per image per branch otherwise. |
 | `suffix_batch_sizes` | Number of question/candidate branches in each packed suffix decode. |
-| `engine_forwards` | Prefix decode, if any, plus suffix decodes. These are engine calls, not HTTP calls. |
-| `branch_prompt_tokens` | Sum of all complete branch lengths, including repeated prefixes. |
+| `engine_forwards` | Prefix decodes (one per text run and image span), per-row image-bearing decodes, plus packed suffix decodes. These are engine calls, not HTTP calls. |
+| `branch_prompt_tokens` | Sum of all complete branch lengths, including repeated prefixes and expanded image tokens. |
 | `computed_prompt_tokens` | Shared prefix length plus all packed suffix tokens decoded. |
 | `logical_prefill_tokens` | Shared prefix length plus unpadded suffix lengths. |
 | `padded_suffix_tokens` | Equal to the packed suffix tokens: rows are packed without padding tokens in this engine. |
@@ -408,7 +423,8 @@ preserve the former default or use plain-text `messages`. Advanced metadata
 includes `prompt_policy` and `prompt_policy_selection` (mode/profile/signature).
 
 An explicit `--classifier-prompt-policy` selects `baseline`, `examples_binary`,
-`repeat_state`, or `strict_mix_repeat2`. It is a startup setting, not a request
+`repeat_state`, `strict_mix_repeat2`, `shared_examples_binary`, `shared_repeat_state`,
+or experimental `universal_shared`. It is a startup setting, not a request
 field or header. Invalid names fail argument parsing; non-baseline policies
 with `--backend laya` fail before loading weights. Before loading GGUF weights,
 the server compiles a sample request with the resolved policy; a chat template or
@@ -421,10 +437,18 @@ vocabulary that cannot serve it stops startup with guidance to pass
 | `examples_binary` | Strict rules + worked examples; state once | Restricted probability of yes over no/yes, in [0,1] |
 | `repeat_state` | Same as examples_binary; state repeated twice | Same binary probability |
 | `strict_mix_repeat2` | Strict rules; full user-input block repeated twice | Original evaluated nine-bin wording and [0.01,0.99] mapping |
+| `shared_examples_binary` | Uniform system/native thinking flag; type-specific instructions after shared context | Binary probability |
+| `shared_repeat_state` | Same shared layout; state twice in shared prefix, chat once | Binary probability |
+| `universal_shared` | Experimental universal rules and labelled catalogue before context; selector-only suffix | Binary probability |
 
-Named policies require `state`; `messages` return 422. Existing text-only
-restrictions still apply. Choice branches use a fixed three-line native
-`[thinking]` prefill, not generated reasoning. Score/Noul do not use this prefill.
+Legacy `examples_binary`, `repeat_state`, and `strict_mix_repeat2` require `state`;
+`messages` return 422. Baseline, shared_* and universal_shared support plain-text chat.
+The chat-compatible policies also support [image chat](VISION.md) when a vision
+projector is loaded. Choice branches in legacy/shared_*
+policies use a fixed three-line native `[thinking]` prefill, not generated reasoning.
+Baseline/universal_shared and Score/Noul branches do not use this prefill.
+Default tuning excludes the three legacy policies. `--all-formats` in the tuning
+tool explicitly includes them and the experimental universal format.
 The chat template must accept text-block content and render assistant
 `reasoning_content`, and the tokenizer must preserve the prefill and every
 allowed single-token answer boundary. The prefill is rendered with Transformers'
@@ -448,6 +472,9 @@ These are process settings, not HTTP request fields. Both `simple-jev` and
 | `--revision` | Unset | Hugging Face revision used when downloading the GGUF. |
 | `--gguf-file` | Unset | One `.gguf` filename to download from a Hugging Face repository with multiple variants. |
 | `--served-model-name` | value of `--model` | Public model ID in responses, health and discovery; does not change which GGUF is loaded. |
+| `--mmproj` | Unset | GGUF vision projector enabling image chat through llama.cpp's libmtmd: a path, or a file name next to the resolved model GGUF / in the `--model` Hugging Face repository (downloaded on its own). Uses the GPU when any layer is offloaded. |
+| `--max-image-width`, `--max-image-height` | Unset | Hard resize bounds on images passed to the vision projector. Requests above these are clamped, not rejected. |
+| `--default-image-max-width`, `--default-image-max-height` | Corresponding hard cap | Default request resize bounds; overridable via `media_io_kwargs.image.max_width/max_height` within hard caps. Explicit defaults must be positive and not exceed hard caps. |
 | `--enforce-model-id` | off | Reject request IDs other than the served name. |
 | `--max-choice-options` | `255` | Choice cap from 2 to 255; Score/Noul unchanged. Above 50, the GGUF vocabulary must provide enough single-token two-letter labels, checked before weights load. |
 | `--classifier-prompt-policy` | Omitted: architecture/size selection | Known GGUF header profiles auto-select a recommended format; unknown profiles warn and use baseline. Explicit values always override, including baseline. |
@@ -468,11 +495,12 @@ These are process settings, not HTTP request fields. Both `simple-jev` and
 | `-h`, `--help` | — | Print argument help and exit. |
 
 No CLI flags are currently provided for authentication, quantization, model
-aliases, request queue size, request concurrency, or vision. The service
-requires GGUF models with a chat template and suitable single-token
-rating/choice labels. Recurrent and hybrid architectures, whose state cannot be
-assumed sequence-copyable, are accepted and default to per-branch prefill;
-arbitrary GGUF files are not guaranteed to work.
+aliases, request queue size, or request concurrency. Image support requires
+`--mmproj`, as documented in [VISION.md](VISION.md). The service requires GGUF
+models with a chat template and suitable single-token rating/choice labels.
+Recurrent and hybrid architectures, whose state cannot be assumed
+sequence-copyable, are accepted and default to per-branch prefill; arbitrary
+GGUF files are not guaranteed to work.
 
 ## Source of truth
 

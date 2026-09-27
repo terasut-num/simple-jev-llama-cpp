@@ -62,6 +62,16 @@ python hf-server/hf_server.py \
   --max-model-len 8192 \
   --max-batch-size 4 --max-batch-tokens 8192
 
+# Alternatively, enable image chat by also loading the model's vision projector
+# (mmproj) from the same GGUF repository; see hf-server/VISION.md.
+python hf-server/hf_server.py \
+  --model unsloth/Qwen3.5-0.8B-GGUF \
+  --gguf-file Qwen3.5-0.8B-BF16.gguf --mmproj mmproj-F16.gguf \
+  --device cpu --dtype float32 \
+  --classifier-prompt-policy baseline \
+  --max-model-len 4096 \
+  --max-batch-size 4 --max-batch-tokens 4096
+
 # Alternatively, run Laya Typed Decisions with its native encoder backend.
 # Stop the previous server first, or choose a different --port.
 python -m pip install -e './hf-server[laya]'
@@ -76,9 +86,10 @@ USE_TF=0 python hf-server/hf_server.py \
 `--model` accepts a local `.gguf` file, a directory containing exactly one
 `.gguf`, or a Hugging Face repository id. For repositories with multiple GGUF
 variants, select one with `--gguf-file NAME.gguf`; only that file is downloaded
-on first run. The public model ID in `/health`, `GET /v1/models`, and responses
-is `--served-model-name` when given, otherwise the `--model` value. For CPU-only
-builds of llama.cpp, omit `CMAKE_ARGS`.
+on first run. Vision projectors (`mmproj*.gguf`) are never selected as the model;
+pass one with `--mmproj` to accept images. The public model ID in `/health`,
+`GET /v1/models`, and responses is `--served-model-name` when given, otherwise the
+`--model` value. For CPU-only builds of llama.cpp, omit `CMAKE_ARGS`.
 
 The CPU example passes `--classifier-prompt-policy baseline` explicitly because
 Qwen2.5-0.5B is not one of the [profiled architectures](#model-sizes-and-recommended-prompt-formats);
@@ -234,9 +245,9 @@ accuracy benchmark. See [search controls and artifacts](eval/README.md#prompt-fo
 Send a non-streaming `POST /v1/classifier` request. With `--enforce-model-id`, the `model` value must exactly match the served ID; otherwise any value is accepted and the response reports the served ID. The examples below use the Qwen2.5 GGUF started above. Supply exactly one of:
 
 - `state`: a string, JSON object, or JSON array containing the shared context.
-- `messages`: text chat history, rendered using the model's own chat template.
+- `messages`: chat history, rendered using the model's own chat template. User turns may include `image_url` blocks when the server loads a vision projector (`--mmproj`); see [image chat inputs](hf-server/VISION.md).
 
-The API takes inspiration from TypeSafe's structured-decision interface and includes project-specific behavior. `/v1/systemone` is an alias of `/v1/classifier`; both run the same implementation. Use this repository's [API reference](hf-server/API_REFERENCE.md) as the contract for clients. `GET /v1/models` advertises the served ID (`--served-model-name`, defaulting to `--model`) and the configured Choice cap as `x_max_choice_options`; it never runs inference. Request model IDs are unchecked unless `--enforce-model-id` is set. Choice defaults to a 255-option cap; set `--max-choice-options` to lower it. Formats for 50 or fewer choices are unchanged. The three named prompt formats accept `state` only; chat `messages` need `baseline`.
+The API takes inspiration from TypeSafe's structured-decision interface and includes project-specific behavior. `/v1/systemone` is an alias of `/v1/classifier`; both run the same implementation. Use this repository's [API reference](hf-server/API_REFERENCE.md) as the contract for clients. `GET /v1/models` advertises the served ID (`--served-model-name`, defaulting to `--model`) and the configured Choice cap as `x_max_choice_options`; it never runs inference. Request model IDs are unchecked unless `--enforce-model-id` is set. Choice defaults to a 255-option cap; set `--max-choice-options` to lower it. Formats for 50 or fewer choices are unchanged. The three legacy named prompt formats (`examples_binary`, `repeat_state`, `strict_mix_repeat2`) accept `state` only; chat `messages` need `baseline` or a `shared_*`/`universal_shared` format.
 
 ```bash
 curl http://127.0.0.1:8000/v1/classifier \
@@ -269,8 +280,10 @@ Question IDs become keys in `answers`.
 
 ### CPU comparison with the original PyTorch server from [`Original repository`](https://github.com/featherless-ai/simple-jev)
 
-The following results use the same request. The original server ran the
-Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint with PyTorch and A100 (80 GB):
+The following results use the same request, both on CPU with `--device cpu --dtype float32
+--classifier-prompt-policy baseline --max-model-len 4096 --max-batch-size 4 --max-batch-tokens 4096`.
+The original server (upstream `dae340e`, PyTorch 2.14 CPU, Transformers 5.17) ran the
+Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint:
 
 ```json
 {
@@ -281,7 +294,7 @@ Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint with PyTorch and A100 (80 GB):
             "confidence": 0.9999804496765137,
             "probabilities": {
                 "red": 0.9999804496765137,
-                "blue": 1.9588253053370863e-05
+                "blue": 1.9588402210501954e-05
             },
             "choice": "red"
         },
@@ -289,7 +302,7 @@ Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint with PyTorch and A100 (80 GB):
             "type": "score",
             "confidence": 0.5364056825637817,
             "probabilities": {
-                "0": 0.009136191569268703,
+                "0": 0.009136209264397621,
                 "1": 0.4544581472873688,
                 "2": 0.5364056825637817
             },
@@ -302,62 +315,67 @@ Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint with PyTorch and A100 (80 GB):
         },
         "dog": {
             "type": "noul",
-            "noul": 0.010081952810287469
+            "noul": 0.03558291614055632
         }
     },
     "usage": {
-        "input_tokens": 796,
+        "input_tokens": 818,
         "output_tokens": 0
     }
 }
 ```
 
-The llama.cpp server ran `Qwen3.5-0.8B-BF16.gguf` on GPU (RTX 4060) with `--dtype float32 --classifier-prompt-policy baseline`:
+The llama.cpp server (llama-cpp-python 0.3.35) ran `Qwen3.5-0.8B-BF16.gguf` from
+`unsloth/Qwen3.5-0.8B-GGUF`:
 
 ```json
 {
-  "model": "unsloth/Qwen3.5-0.8B-GGUF",
-  "answers": {
-    "color": {
-      "type": "choice",
-      "confidence": 0.9999802112579346,
-      "probabilities": {
-        "red": 0.9999802112579346,
-        "blue": 1.9806906493613496e-05
-      },
-      "choice": "red"
+    "model": "unsloth/Qwen3.5-0.8B-GGUF",
+    "answers": {
+        "color": {
+            "type": "choice",
+            "confidence": 0.9999806880950928,
+            "probabilities": {
+                "red": 0.9999806880950928,
+                "blue": 1.933676321641542e-05
+            },
+            "choice": "red"
+        },
+        "support": {
+            "type": "score",
+            "confidence": 0.532999575138092,
+            "probabilities": {
+                "0": 0.009177694097161293,
+                "1": 0.4578227400779724,
+                "2": 0.532999575138092
+            },
+            "score": 1.5238218307495117,
+            "legend": {
+                "0": "Unsupported",
+                "1": "Partially supported",
+                "2": "Fully supported"
+            }
+        },
+        "dog": {
+            "type": "noul",
+            "noul": 0.03621333360671996
+        }
     },
-    "support": {
-      "type": "score",
-      "confidence": 0.5352787971496582,
-      "probabilities": {
-        "0": 0.009363764896988869,
-        "1": 0.45535746216773987,
-        "2": 0.5352787971496582
-      },
-      "score": 1.5259150266647339,
-      "legend": {
-        "0": "Unsupported",
-        "1": "Partially supported",
-        "2": "Fully supported"
-      }
-    },
-    "dog": {
-      "type": "noul",
-      "noul": 0.010085486769676195
+    "usage": {
+        "input_tokens": 818,
+        "output_tokens": 0
     }
-  },
-  "usage": {
-    "input_tokens": 796,
-    "output_tokens": 0
-  }
 }
 ```
 
 Both servers selected `red`, placed `support` toward the third rubric level,
-and reported 796 input tokens. Their probabilities and score differ slightly,
-as expected from the FP16 GGUF weights and differing PyTorch/llama.cpp numeric
-implementations described above.
+and reported 818 input tokens: they compile the identical prompt. Their
+probabilities and score differ slightly, as expected from the BF16 GGUF weights
+and differing PyTorch/llama.cpp numeric implementations described above. The
+response `model` is the served ID; the output above was started with
+`--model unsloth/Qwen3.5-0.8B-GGUF --gguf-file Qwen3.5-0.8B-BF16.gguf`. Results
+recorded before the Noul wording `Encode probability 0.1 as 1, 0.2 as 2, and so on
+through 0.9 as 9.` (796 input tokens, Noul about 0.010) are not comparable with these.
 
 | Question type | Input criteria | Result |
 | --- | --- | --- |
@@ -400,7 +418,7 @@ curl http://127.0.0.1:8000/v1/classifier \
 JSON
 ```
 
-Unknown top-level request fields are ignored, including completion settings such as `temperature`, `max_tokens`, and `stream`. Unknown fields inside questions and options are rejected. There is no completion sampling or streaming. The GGUF server currently supports text only; images, audio, video, and tool calls are unsupported.
+Unknown top-level request fields are ignored, including completion settings such as `temperature`, `max_tokens`, and `stream`. Unknown fields inside questions and options are rejected. There is no completion sampling or streaming. The GGUF server supports text and [image chat inputs](hf-server/VISION.md) when started with the model's vision projector (`--mmproj`, e.g. `mmproj-F16.gguf`), through llama.cpp's libmtmd: Qwen-VL/Qwen3.5, Gemma 3, SmolVLM and other projector families llama.cpp supports. Each image is encoded once per request. Images use `image_url` blocks in user `messages`, with base64 data URLs or bounded public HTTP(S) downloads. Private-network URLs, audio, video, and tool calls are rejected.
 
 `usage.input_tokens` counts unique token prefixes within the request, sharing the common context across questions. `usage.output_tokens` is zero because no output tokens are generated. For diagnostic timings, start the server with `ENABLE_OPEN_JEV_ADVANCED_METRICS=1`; adding `"options": {"raw_logits": true}` to a request then includes selected-token logits.
 

@@ -5,7 +5,7 @@ from catalog import ROOT, entries, render
 
 class CatalogTests(unittest.TestCase):
     def test_all_manifests_classified(self):
-        taxonomy=json.loads((ROOT/'taxonomy.json').read_text())['categories']
+        taxonomy=json.loads((ROOT/'taxonomy.json').read_text(encoding='utf-8'))['categories']
         ids=[]
         for path,d in entries():
             with self.subTest(path=path):

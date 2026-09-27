@@ -36,7 +36,7 @@ class AdditionalTests(unittest.TestCase):
         self.assertEqual(len(rows),6)
         self.assertTrue(all(r['state']['output'] for r in rows))
         for p in (root/'suites').glob('*/*.json'):
-            m=json.loads(p.read_text())
+            m=json.loads(p.read_text(encoding='utf-8'))
             self.assertEqual(m['language_group'],p.parent.name)
             self.assertTrue(m['languages'])
             if m['language_group']=='english': self.assertEqual(m['languages'],['en'])

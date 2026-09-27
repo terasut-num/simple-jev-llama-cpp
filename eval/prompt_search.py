@@ -26,13 +26,17 @@ from presets import suite_paths, describe
 from suites import load_suite, evaluator_hashes
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICIES = ('baseline', 'examples_binary', 'repeat_state', 'strict_mix_repeat2')
+# Default tuning is sharing-compatible. Broader searches require explicit opt-in.
+POLICIES = ('baseline', 'shared_examples_binary', 'shared_repeat_state')
+ALL_POLICIES = ('baseline', 'examples_binary', 'repeat_state', 'strict_mix_repeat2',
+                'shared_examples_binary', 'shared_repeat_state', 'universal_shared')
+SHARING_POLICIES = POLICIES + ('universal_shared',)
 COUNTS = {'jevbench-public': 231, 'semif-authored': 144, 'semif-typesafe': 102}
 
 
 def write_json(path, value):
     temporary = path.with_suffix(path.suffix + '.tmp')
-    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n', encoding='utf-8', newline='\n')
     temporary.replace(path)
 
 
@@ -110,6 +114,8 @@ def comparison(results, policies):
     tied = [r['policy'] for r in complete if r['correct'] == best]
     finished = len(results) == len(policies) and len(complete) == len(policies)
     return {'complete': finished, 'selection_metric': 'pooled native correct / 477',
+            'sharing_compatible_only': all(p in SHARING_POLICIES for p in policies),
+            'nonshared_policies': [p for p in policies if p not in SHARING_POLICIES],
             'development_selection_not_held_out': True,
             'recommended_policy': tied[0] if finished else None,
             'best_complete_policies': tied, 'tie_break': 'requested policy order',
@@ -190,7 +196,7 @@ def run_policy(args, policy, directory, provenance):
         port_available(args.port)  # Never reuse or stop an existing listener.
         if source_hashes() != provenance['source_sha256'] or preflight() != provenance['dataset_sha256']:
             raise ValueError('Source or datasets changed during search')
-        with (directory / 'server.log').open('w') as log:
+        with (directory / 'server.log').open('w', encoding='utf-8', newline='\n') as log:
             server = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
             write_json(directory / 'process.json', {'pid': server.pid,
                        'started_at_unix': time.time(), 'served_model_name': served})
@@ -204,13 +210,13 @@ def run_policy(args, policy, directory, provenance):
             write_json(directory / 'eval-command.json', run)
             environment = {**os.environ, 'NO_PROXY': '127.0.0.1,localhost',
                            'no_proxy': '127.0.0.1,localhost'}
-            with (directory / 'eval.log').open('w') as evaluation_log:
+            with (directory / 'eval.log').open('w', encoding='utf-8', newline='\n') as evaluation_log:
                 completed = subprocess.run(run, stdout=evaluation_log, stderr=subprocess.STDOUT,
                                            timeout=args.eval_timeout, env=environment)
             result['evaluation_exit_code'] = completed.returncode
             if completed.returncode:
                 raise RuntimeError('Evaluation failed or contains failed rows; inspect eval.log and raw records')
-            with (directory / 'audit.log').open('w') as audit_log:
+            with (directory / 'audit.log').open('w', encoding='utf-8', newline='\n') as audit_log:
                 audit = subprocess.run([sys.executable, str(ROOT / 'eval/audit.py'),
                                         '--run', str(directory / 'eval'), '--preset', 'quick'],
                                        stdout=audit_log, stderr=subprocess.STDOUT, timeout=300)
@@ -218,7 +224,7 @@ def run_policy(args, policy, directory, provenance):
                 raise RuntimeError('Native response/coverage audit failed; inspect audit.log')
             if source_hashes() != provenance['source_sha256'] or preflight() != provenance['dataset_sha256']:
                 raise ValueError('Source or datasets changed during evaluation')
-            summary = json.loads((directory / 'eval/summary.json').read_text())
+            summary = json.loads((directory / 'eval/summary.json').read_text(encoding='utf-8'))
             result.update(status='complete', correct=native_total(summary), rows=477, suites=summary)
     except KeyboardInterrupt:
         result.update(status='interrupted', error='Interrupted by user')
@@ -240,7 +246,11 @@ def parser():
     p.add_argument('--chat-template-file', type=Path,
                    help="Jinja template replacing the GGUF's embedded chat template")
     p.add_argument('--output', type=Path, help='New directory; never overwritten or resumed')
-    p.add_argument('--policies', nargs='+', choices=POLICIES, default=list(POLICIES))
+    scope = p.add_mutually_exclusive_group()
+    scope.add_argument('--policies', nargs='+', choices=ALL_POLICIES,
+                       help='Explicit subset; may include legacy non-sharing formats')
+    scope.add_argument('--all-formats', action='store_true',
+                       help='Opt in to all formats, including legacy non-sharing formats')
     p.add_argument('--list', action='store_true', help='Offline plan only; no model loads/downloads')
     p.add_argument('--device', default='auto', help='cpu, or auto/gpu/vulkan to offload all layers')
     p.add_argument('--n-gpu-layers', type=int, help='Explicit llama.cpp layer offload; overrides --device')
@@ -266,6 +276,8 @@ def interrupt_search(signum, frame):
 
 def main(argv=None):
     p = parser(); args = p.parse_args(argv)
+    if args.policies is None:
+        args.policies = list(ALL_POLICIES if args.all_formats else POLICIES)
     if len(set(args.policies)) != len(args.policies):
         p.error('Policies must be unique')
     if not 1 <= args.port <= 65535 or any(not math.isfinite(v) or v <= 0 for v in (
@@ -274,6 +286,8 @@ def main(argv=None):
         p.error('Limits and timeouts must be positive; port must be 1..65535')
     if args.list:
         print(json.dumps({'model': args.model, 'policies': args.policies,
+                          'sharing_compatible_only': all(policy in SHARING_POLICIES for policy in args.policies),
+                          'nonshared_policies': [policy for policy in args.policies if policy not in SHARING_POLICIES],
                           'suites': describe(suite_paths('quick')),
                           'commands': [server_command(args, policy, '<unique-search-id>') for policy in args.policies]}, indent=2))
         return 0
@@ -318,7 +332,7 @@ def main(argv=None):
         # The interrupted policy's own result/logs are already persisted.
         partial = args.output / policy / 'result.json'
         if partial.is_file() and not any(r['policy'] == policy for r in results):
-            results.append(json.loads(partial.read_text()))
+            results.append(json.loads(partial.read_text(encoding='utf-8')))
         write_json(args.output / 'comparison.json', comparison(results, args.policies))
         return 130
     finally:

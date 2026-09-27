@@ -47,7 +47,7 @@ def main():
     sidecar = a.output.with_suffix('.provenance.json')
     if a.output.exists() or sidecar.exists():
         p.error('Refusing to overwrite data/provenance')
-    meta = json.loads((ROOT/'vendor/mmlu/source.json').read_text())
+    meta = json.loads((ROOT/'vendor/mmlu/source.json').read_text(encoding='utf-8'))
     if not a.source.exists():
         if not a.download:
             p.error('Source missing; supply the pinned parquet or use --download')
@@ -61,11 +61,11 @@ def main():
     rows = convert(pq.read_table(io.BytesIO(raw)).to_pylist(), meta['subject_counts'])
     content = ''.join(json.dumps(r, ensure_ascii=False)+'\n' for r in rows)
     a.output.parent.mkdir(parents=True, exist_ok=True)
-    a.output.write_text(content)
+    a.output.write_text(content, encoding='utf-8', newline='\n')
     sidecar.write_text(json.dumps({'source': meta, 'rows': len(rows),
         'protocol': 'zero-shot classifier Choice; no dev demonstrations, retrieval or generated rationale',
         'dataset_sha256': hashlib.sha256(content.encode()).hexdigest(),
-        'preparer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}, indent=2)+'\n')
+        'preparer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}, indent=2)+'\n', encoding='utf-8', newline='\n')
     print(f'Prepared {len(rows)} questions across {len(meta["subject_counts"])} subjects; no inference performed')
 
 

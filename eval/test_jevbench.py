@@ -80,6 +80,6 @@ class JevBenchTests(unittest.TestCase):
         with self.assertRaises(ValueError):jevbench.validate([self.rows[0],self.rows[0]])
 
     def test_published_reference_matches_exact_ids(self):
-        ref=json.loads((ROOT/'vendor/jevbench/jev-public-reference.json').read_text())
+        ref=json.loads((ROOT/'vendor/jevbench/jev-public-reference.json').read_text(encoding='utf-8'))
         self.assertEqual(set(ref['outcomes']),{r['id'] for r in self.rows})
         self.assertEqual(sum(v=='c' for v in ref['outcomes'].values()),200)

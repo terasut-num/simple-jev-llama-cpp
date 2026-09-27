@@ -25,7 +25,7 @@ def mme(root):
         for path in files:
             candidates=[p for base in [folder,folder/'images'] for p in base.glob(path.stem+'.*') if p.suffix.lower() in ('.jpg','.jpeg','.png')]
             if len(candidates)!=1: raise ValueError(f'Expected one image for {path}')
-            lines=[l for l in path.read_text().splitlines() if l.strip()]
+            lines=[l for l in path.read_text(encoding='utf-8').splitlines() if l.strip()]
             if len(lines)!=2: raise ValueError('MME image must have two questions')
             for i,line in enumerate(lines):
                 question,answer=line.rsplit('\t',1)
@@ -41,7 +41,7 @@ def main():
     p.add_argument('--annotations',type=Path,help='Original TallyQA tallyqa.zip (POPE annotations are bundled)')
     a=p.parse_args();out=ROOT/'data'/a.suite
     if out.exists(): p.error('Output already exists')
-    meta=json.loads((ROOT/'vendor/visual-qa'/f'{a.suite}.json').read_text())
+    meta=json.loads((ROOT/'vendor/visual-qa'/f'{a.suite}.json').read_text(encoding='utf-8'))
     files={}
     def check(path,expected=None):
         raw=path.read_bytes();sha=hashlib.sha256(raw).hexdigest()
@@ -79,11 +79,11 @@ def main():
         row['image_path'],row['image_sha256']=cache[image];rows.append(row)
     visual_qa.bind_assets(rows,out);visual_qa.validate(rows)
     content=''.join(json.dumps({k:v for k,v in r.items() if not k.startswith('_')},ensure_ascii=False)+'\n' for r in rows)
-    (out/'rows.jsonl').write_text(content)
+    (out/'rows.jsonl').write_text(content, encoding='utf-8', newline='\n')
     import PIL
     (out/'provenance.json').write_text(json.dumps({'source':meta,'files':files,'rows':len(rows),'pillow_version':PIL.__version__,
         'preprocessing':'EXIF transpose, RGB PNG; no resize/crop','dataset_sha256':hashlib.sha256(content.encode()).hexdigest(),
-        'preparer_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},indent=2)+'\n')
+        'preparer_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},indent=2)+'\n', encoding='utf-8', newline='\n')
     print(f'Prepared {len(rows)} original questions; no inference performed')
 
 

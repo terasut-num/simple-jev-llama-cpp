@@ -46,7 +46,7 @@ def compare(reports, mode, reference=None):
     result = {'mode': mode, 'models': {},
               'validation': 'Report metadata/counts only; audit.py verifies raw responses separately.'}
     if mode in ('decision', 'text'):
-        reference = reference or json.loads(REFERENCE.read_text())
+        reference = reference or json.loads(REFERENCE.read_text(encoding='utf-8'))
         wanted = [r for r in reference['items']
                   if mode == 'text' or r['task'] == 'classification-decision']
         if len(wanted) != (54 if mode == 'text' else 26):
@@ -104,11 +104,11 @@ def main():
         name, separator, path = value.partition('=')
         if not separator or not name or name in reports:
             parser.error('--report requires a unique nonempty NAME=REPORT_JSON')
-        reports[name] = json.loads(Path(path).read_text())
+        reports[name] = json.loads(Path(path).read_text(encoding='utf-8'))
     result = json.dumps(compare(reports, args.mode), indent=2, allow_nan=False) + '\n'
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        with args.output.open('x') as stream:
+        with args.output.open('x', encoding='utf-8', newline='\n') as stream:
             stream.write(result)
     else:
         print(result, end='')

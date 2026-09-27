@@ -34,7 +34,7 @@ SUITES = (['legal-contractnli', 'legal-unfair-tos', 'legal-casehold'] +
 
 
 def metadata(name):
-    return json.loads((META / (name + '.json')).read_text())
+    return json.loads((META / (name + '.json')).read_text(encoding='utf-8'))
 
 
 class Inputs:
@@ -250,7 +250,7 @@ def prepare(args, inputs):
         kind = {'legal-casehold': 'case_hold', 'legal-unfair-tos': 'unfair_tos'}[suite]
         for file, table in inputs.parquet('lexglue'):
             if file.startswith(kind+'/'):
-                labels = json.loads((META/'lexglue-labels.json').read_text()).get(kind, [])
+                labels = json.loads((META/'lexglue-labels.json').read_text(encoding='utf-8')).get(kind, [])
                 # Check the pinned label names against actual parquet feature metadata.
                 features = json.loads(table.schema.metadata[b'huggingface'])['info']['features']
                 if kind != 'case_hold':
@@ -299,12 +299,12 @@ def main():
     provenance = {'suite': a.suite, 'rows': len(rows), 'input_sha256': inputs.hashes,
                   'top_k': a.top_k, 'chunk_chars': a.chunk_chars,
                   'candidate_method': 'BM25 k1=1.2 b=0.75; Unicode word tokens; ID ties; no gold injection',
-                  'sources': {p.stem: json.loads(p.read_text()) for p in META.glob('*.json')},
+                  'sources': {p.stem: json.loads(p.read_text(encoding='utf-8')) for p in META.glob('*.json')},
                   'preparer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   'dataset_sha256': hashlib.sha256(content.encode()).hexdigest()}
     a.output.parent.mkdir(parents=True, exist_ok=True)
-    a.output.write_text(content)
-    sidecar.write_text(json.dumps(provenance, indent=2)+'\n')
+    a.output.write_text(content, encoding='utf-8', newline='\n')
+    sidecar.write_text(json.dumps(provenance, indent=2)+'\n', encoding='utf-8', newline='\n')
     print(f'Prepared {len(rows)} rows; no inference performed')
 
 

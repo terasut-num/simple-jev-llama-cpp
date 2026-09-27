@@ -13,7 +13,7 @@ def suite_paths(name):
         return [ROOT / 'suites' / p for p in (
             'jevbench-public.json', 'english/semif-authored.json',
             'english/semif-typesafe.json')]
-    selected = json.loads((ROOT / 'full-suites.json').read_text())
+    selected = json.loads((ROOT / 'full-suites.json').read_text(encoding='utf-8'))
     paths = selected['text'] if name in ('decision', 'full-text') else selected['image']
     if name == 'full':
         paths = selected['text'] + selected['image']
@@ -28,7 +28,7 @@ def suite_paths(name):
         # Keep mixed parents whole: category reports retain native project-wide
         # coverage. CodeMMLU's decision children must not be missed merely because
         # its historical parent metadata says model-knowledge.
-        paths = [p for p in paths if contains_decision(json.loads(p.read_text()))]
+        paths = [p for p in paths if contains_decision(json.loads(p.read_text(encoding='utf-8')))]
     return paths
 
 
@@ -40,7 +40,7 @@ def _decision(suite):
 def describe(paths):
     result = []
     for path in paths:
-        suite = json.loads(path.read_text())
+        suite = json.loads(path.read_text(encoding='utf-8'))
         dataset = (path.parent / suite['dataset']).resolve()
         result.append({'suite': suite['id'], 'manifest': str(path),
                        'dataset': str(dataset), 'dataset_present': dataset.is_file()})

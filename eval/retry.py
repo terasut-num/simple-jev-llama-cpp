@@ -20,7 +20,7 @@ def retry_run(root, key, workers=16):
     root=Path(root)
     reports={}
     for path in sorted(root.glob('*/manifest.json')):
-        manifest=json.loads(path.read_text());suite=manifest['suite'];adapter=ADAPTERS[suite['adapter']]
+        manifest=json.loads(path.read_text(encoding='utf-8'));suite=manifest['suite'];adapter=ADAPTERS[suite['adapter']]
         verify_evaluator(manifest)
         if hashlib.sha256(Path(adapter.__file__).read_bytes()).hexdigest()!=manifest['adapter_sha256']:
             raise ValueError('Adapter changed; use the original run revision')
@@ -29,13 +29,13 @@ def retry_run(root, key, workers=16):
             raise ValueError('Scoring inputs changed')
         rows=[json.loads(l) for l in raw.splitlines() if l.strip()]
         predictions=path.parent/'predictions.jsonl'
-        records=[json.loads(l) for l in predictions.read_text().splitlines() if l.strip()]
+        records=[json.loads(l) for l in predictions.read_text(encoding='utf-8').splitlines() if l.strip()]
         indexed={r['id']:r for r in records}
         if len(indexed)!=len(records) or set(indexed)!={r['id'] for r in rows}:
             raise ValueError('Retry requires one saved prediction per example; finish/resume the run first')
         journal=path.parent/'server-retries.jsonl'
         if journal.exists():
-            for line in journal.read_text().splitlines():
+            for line in journal.read_text(encoding='utf-8').splitlines():
                 record=json.loads(line)
                 if record['id'] not in indexed:raise ValueError('Unknown retry ID')
                 indexed[record['id']]=record
@@ -48,7 +48,7 @@ def retry_run(root, key, workers=16):
                 adapter.bind_assets(rows, manifest['asset_root'])
                 adapter.validate(rows)
             print(f"Retrying {len(failed)} server failures in {suite['id']}",flush=True)
-            with journal.open('a') as output,ThreadPoolExecutor(max_workers=workers) as pool:
+            with journal.open('a', encoding='utf-8', newline='\n') as output,ThreadPoolExecutor(max_workers=workers) as pool:
                 for record in pool.map(lambda row:request_record(args,key,adapter,row),failed):
                     previous=dict(indexed[record['id']])
                     record['prior_results']=previous.pop('prior_results',[])+[previous]
@@ -57,18 +57,18 @@ def retry_run(root, key, workers=16):
             manifest.setdefault('server_retry_runs',[]).append({'time_unix':time.time(),
                 'rows':len(failed),'workers':workers,'retry_statuses':'HTTP 500-599',
                 'runner_sha256':hashlib.sha256(Path(__file__).with_name('run.py').read_bytes()).hexdigest()})
-            path.write_text(json.dumps(manifest,indent=2)+'\n')
+            path.write_text(json.dumps(manifest,indent=2)+'\n', encoding='utf-8', newline='\n')
         ordered=[indexed[row['id']] for row in rows]
         temporary=predictions.with_suffix('.tmp')
-        with temporary.open('w') as out:
+        with temporary.open('w', encoding='utf-8', newline='\n') as out:
             for record in ordered:out.write(json.dumps(record)+'\n')
         temporary.replace(predictions)
         summary=adapter.summarize(rows,ordered)
         for field in ('category','subcategory','modality','language_group','languages'):
             summary[field]=suite.get(field,[] if field=='languages' else 'unspecified')
-        (path.parent/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+        (path.parent/'summary.json').write_text(json.dumps(summary,indent=2)+'\n', encoding='utf-8', newline='\n')
         reports[suite['id']]=summary
-    (root/'summary.json').write_text(json.dumps(reports,indent=2)+'\n')
+    (root/'summary.json').write_text(json.dumps(reports,indent=2)+'\n', encoding='utf-8', newline='\n')
     write_reports(root)
     return reports
 

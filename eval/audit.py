@@ -28,7 +28,7 @@ def audit_run(root, paths, override=None):
     summaries = {}
     for suite, adapter, source, rows in loaded:
         directory = root / suite['id']
-        manifest = json.loads((directory / 'manifest.json').read_text())
+        manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
         verify_evaluator(manifest)
         if (manifest['suite'] != suite or manifest['rows'] != len(rows)
                 or manifest['dataset_sha256'] != sha(source)
@@ -44,7 +44,7 @@ def audit_run(root, paths, override=None):
         if len(by_id) != len(rows):
             raise ValueError('Duplicate source IDs')
         records = {}
-        for line in (directory / 'predictions.jsonl').read_text().splitlines():
+        for line in (directory / 'predictions.jsonl').read_text(encoding='utf-8').splitlines():
             if not line.strip():
                 continue
             record = json.loads(line)
@@ -63,13 +63,13 @@ def audit_run(root, paths, override=None):
         for field in ('category', 'subcategory', 'modality', 'language_group', 'languages'):
             summary[field] = suite.get(field, [] if field == 'languages' else 'unspecified')
         if (summary.get('failed_rows')
-                or summary != json.loads((directory / 'summary.json').read_text())):
+                or summary != json.loads((directory / 'summary.json').read_text(encoding='utf-8'))):
             raise ValueError('Incomplete or inconsistent suite summary')
         summaries[suite['id']] = summary
         verified += len(rows)
-    if summaries != json.loads((root / 'summary.json').read_text()):
+    if summaries != json.loads((root / 'summary.json').read_text(encoding='utf-8')):
         raise ValueError('Root summary differs from rescoring')
-    if collect([root]) != json.loads((root / 'report.json').read_text()):
+    if collect([root]) != json.loads((root / 'report.json').read_text(encoding='utf-8')):
         raise ValueError('Consolidated report differs from rescoring')
     return {'complete': True, 'verified_suites': len(expected), 'verified_examples': verified,
             # Binary labels / extracted fields / otherwise benchmark examples.

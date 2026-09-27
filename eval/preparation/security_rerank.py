@@ -65,7 +65,7 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     a=p.parse_args()
     repo='jev-sec-bench' if a.source.startswith('security') else 'jev-phishing-bench' if a.source=='phishing-verdict' else 'jev-rerank-bench'
-    source=json.loads((ROOT/'vendor'/repo/'source.json').read_text())
+    source=json.loads((ROOT/'vendor'/repo/'source.json').read_text(encoding='utf-8'))
     if subprocess.check_output(['git','-C',str(a.checkout),'rev-parse','HEAD'],text=True).strip()!=source['revision']: p.error('Checkout differs from pinned revision')
     if a.output.exists() or a.output.with_suffix('.provenance.json').exists(): p.error('Output exists')
     files={}
@@ -87,10 +87,10 @@ def main():
         if a.dataset not in available: p.error('Unsupported passage dataset')
         rows=passages(read(a.checkout/f'candidates/{a.dataset}.jsonl'),read(a.checkout/f'candidates/{a.dataset}.docs.jsonl'))
     content=''.join(json.dumps(r,ensure_ascii=False,allow_nan=False)+'\n' for r in rows)
-    a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(content)
+    a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(content, encoding='utf-8', newline='\n')
     a.output.with_suffix('.provenance.json').write_text(json.dumps({'source':source,'variant':a.source,'dataset':a.dataset,
         'files':files,'rows':len(rows),'dataset_sha256':hashlib.sha256(content.encode()).hexdigest(),
-        'converter_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},indent=2)+'\n')
+        'converter_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},indent=2)+'\n', encoding='utf-8', newline='\n')
     print(f'Prepared {len(rows)} rows; no inference performed')
 
 

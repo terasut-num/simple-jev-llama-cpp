@@ -57,7 +57,6 @@ def test_compiler_renders_common_plan_and_checks_real_boundaries():
         "Encode probability 0.1 as 1, 0.2 as 2, and so on through 0.9 as 9."
         in compiled.branches[2].messages[-1]["content"]
     )
-    
     assert compiled.plan.questions[2].answer_prefix == '{"answer": '
     assert compiled.plan.questions[2].output_labels == tuple("123456789")
     assert compiled.branches[2].output_ids == list(map(ord, "123456789"))
@@ -106,13 +105,13 @@ def test_invalid_boundary_and_duplicate_labels_rejected():
         {
             "state": None,
             "messages": [
-                {"role": "user", "content": [{"type": "text", "text": "red"}]}
+                {"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}]}
             ],
         },
     ],
 )
 def test_text_restrictions_remain(patch):
-    """Shared schema acceptance must not bypass the HF text-only restrictions."""
+    """Unsupported tools/modalities remain explicit errors, not discarded input."""
     with pytest.raises(ValueError, match="text|tools"):
         PromptCompiler(Tokenizer()).compile({**request(), **patch})
 

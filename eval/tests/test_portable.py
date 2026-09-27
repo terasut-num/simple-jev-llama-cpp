@@ -31,7 +31,7 @@ class PresetTests(unittest.TestCase):
         for name, count in [('quick', 3), ('decision', 20), ('full-text', 65), ('vision', 7), ('full', 72)]:
             paths = suite_paths(name)
             self.assertEqual(len(paths), count)
-            ids = [json.loads(p.read_text())['id'] for p in paths]
+            ids = [json.loads(p.read_text(encoding='utf-8'))['id'] for p in paths]
             self.assertEqual(len(ids), len(set(ids)))
             for identifier in ids:
                 suite = catalog[identifier]
@@ -43,21 +43,21 @@ class PresetTests(unittest.TestCase):
     def test_decision_preset_covers_all_26_reference_items_including_mixed_parents(self):
         actual = set()
         for path in suite_paths('decision'):
-            suite = json.loads(path.read_text())
+            suite = json.loads(path.read_text(encoding='utf-8'))
             for part in snapshot(suite)['partitions']:
                 if part['subcategory'] == 'classification-decision':
                     actual.add((suite['project'], suite['project_configuration'],
                                 part['category'], part['subcategory']))
-        reference = json.loads(REFERENCE.read_text())
+        reference = json.loads(REFERENCE.read_text(encoding='utf-8'))
         expected = {(r['project'], r['configuration'], r['category'], r['task'])
                     for r in reference['items'] if r['task'] == 'classification-decision'}
         self.assertEqual(len(expected), 26)
         self.assertEqual(actual, expected)
-        self.assertIn('codemmlu-full', [json.loads(p.read_text())['id'] for p in suite_paths('decision')])
+        self.assertIn('codemmlu-full', [json.loads(p.read_text(encoding='utf-8'))['id'] for p in suite_paths('decision')])
 
     def test_quick_native_fixture_and_source_commitments(self):
         expected = []
-        meta = json.loads((ROOT / 'vendor/jevbench/source-manifest.json').read_text())
+        meta = json.loads((ROOT / 'vendor/jevbench/source-manifest.json').read_text(encoding='utf-8'))
         for tier in ('easy', 'original', 'hard'):
             raw = (ROOT / f'vendor/jevbench/{tier}.jsonl').read_bytes()
             self.assertEqual(hashlib.sha256(raw).hexdigest(), meta['files'][f'datasets/public/{tier}.jsonl']['sha256'])
@@ -77,7 +77,7 @@ class PresetTests(unittest.TestCase):
     def test_list_from_an_unrelated_working_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = subprocess.check_output([sys.executable, str(ROOT / 'run.py'),
-                                               '--preset', 'quick', '--list'], cwd=tmp, text=True)
+                                               '--preset', 'quick', '--list'], cwd=tmp, encoding='utf-8')
             rows = json.loads(output)
             self.assertEqual(len(rows), 3)
             self.assertTrue(rows[0]['dataset_present'])
@@ -98,11 +98,11 @@ class PortableExecutionTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         rows = load_suite(ROOT / 'suites/english/semif-authored.json')[3][:2]
         self.data = self.root / 'rows.jsonl'
-        self.data.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+        self.data.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8', newline='\n')
         self.path = self.root / 'suite.json'
         # Minimal pre-migration custom manifests remain supported.
         self.path.write_text(json.dumps({'schema_version': 1, 'id': 'tiny', 'version': '1',
-                                         'adapter': 'choice-v1', 'dataset': 'rows.jsonl'}))
+                                         'adapter': 'choice-v1', 'dataset': 'rows.jsonl'}), encoding='utf-8', newline='\n')
         self.output = self.root / 'results'
 
     def args(self):
@@ -121,7 +121,7 @@ class PortableExecutionTests(unittest.TestCase):
         self.output.mkdir()
         with patch('run.request_record', side_effect=self.predict), contextlib.redirect_stdout(io.StringIO()):
             summary = run.run_suite(self.args(), None, *load_suite(self.path))
-        (self.output / 'summary.json').write_text(json.dumps({'tiny': summary}))
+        (self.output / 'summary.json').write_text(json.dumps({'tiny': summary}), encoding='utf-8', newline='\n')
         write_reports(self.output)
 
     def test_real_localhost_transport_and_offline_replay(self):
@@ -162,36 +162,36 @@ class PortableExecutionTests(unittest.TestCase):
     def test_audit_rejects_failed_missing_duplicate_and_forged_predictions(self):
         self.make_run()
         path = self.output / 'tiny/predictions.jsonl'
-        original = path.read_text()
+        original = path.read_text(encoding='utf-8')
         records = [json.loads(line) for line in original.splitlines()]
         variants = [records[:1], records + [records[0]],
                     [dict(records[0], error='HTTP 500'), records[1]],
                     [dict(records[0], probabilities=[0, 0]), records[1]]]
         for variant in variants:
             with self.subTest(variant=variant):
-                path.write_text(''.join(json.dumps(r) + '\n' for r in variant))
+                path.write_text(''.join(json.dumps(r) + '\n' for r in variant), encoding='utf-8', newline='\n')
                 with self.assertRaises(ValueError):
                     audit_run(self.output, [self.path])
-        path.write_text(original)
+        path.write_text(original, encoding='utf-8', newline='\n')
         self.assertTrue(audit_run(self.output, [self.path])['complete'])
 
     def test_audit_rejects_changed_source_or_summary(self):
         self.make_run()
-        original = self.data.read_text()
-        self.data.write_text(original + '\n')
+        original = self.data.read_text(encoding='utf-8')
+        self.data.write_text(original + '\n', encoding='utf-8', newline='\n')
         with self.assertRaises(ValueError):
             audit_run(self.output, [self.path])
-        self.data.write_text(original)
-        (self.output / 'summary.json').write_text('{}')
+        self.data.write_text(original, encoding='utf-8', newline='\n')
+        (self.output / 'summary.json').write_text('{}', encoding='utf-8', newline='\n')
         with self.assertRaises(ValueError):
             audit_run(self.output, [self.path])
 
     def test_dependency_commitment_guards_report_retry_and_resume(self):
         self.make_run()
         path = self.output / 'tiny/manifest.json'
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(path.read_text(encoding='utf-8'))
         manifest['evaluator_sha256']['vendor/jevbench/scoring.py'] = 'changed'
-        path.write_text(json.dumps(manifest))
+        path.write_text(json.dumps(manifest), encoding='utf-8', newline='\n')
         with self.assertRaisesRegex(ValueError, 'dependencies changed'):
             write_reports(self.output)
         with self.assertRaisesRegex(ValueError, 'dependencies changed'):
@@ -206,9 +206,9 @@ class PortableExecutionTests(unittest.TestCase):
         row = make_row({'id': 'tiny', 'source_labels': ['cat', 'dog'], 'question': '?'}, 0, 0, png)
         image = self.root / row['image_path']; image.parent.mkdir()
         image.write_bytes(png)
-        self.data.write_text(json.dumps(row) + '\n')
-        suite = json.loads(self.path.read_text()); suite['adapter'] = 'vision-choice-v1'
-        self.path.write_text(json.dumps(suite))
+        self.data.write_text(json.dumps(row) + '\n', encoding='utf-8', newline='\n')
+        suite = json.loads(self.path.read_text(encoding='utf-8')); suite['adapter'] = 'vision-choice-v1'
+        self.path.write_text(json.dumps(suite), encoding='utf-8', newline='\n')
         self.output.mkdir()
         with patch('run.request_record', return_value={'id': row['id'], 'error': 'HTTP 503', 'http_status': 503}), contextlib.redirect_stdout(io.StringIO()):
             run.run_suite(self.args(), None, *load_suite(self.path))
@@ -228,7 +228,7 @@ class PortableExecutionTests(unittest.TestCase):
 
 class ComparisonTests(unittest.TestCase):
     def reference_report(self):
-        reference = json.loads(REFERENCE.read_text())
+        reference = json.loads(REFERENCE.read_text(encoding='utf-8'))
         return {'model': 'test', 'by_category': [
             {'project': r['project'], 'configuration': r['configuration'], 'coverage': 'complete',
              'placement': ['text', 'english', r['category'], r['task']],
@@ -238,7 +238,7 @@ class ComparisonTests(unittest.TestCase):
     def test_native_reference_macro_aggregation(self):
         report = self.reference_report()
         result = compare({'test': report}, 'decision')['models']['test']
-        reference = json.loads(REFERENCE.read_text())
+        reference = json.loads(REFERENCE.read_text(encoding='utf-8'))
         self.assertEqual(len(result['items']), 26)
         self.assertEqual(sum(r['rows'] for r in result['items']), 21364)
         self.assertAlmostEqual(result['scores']['classification-decision'], reference['totals']['classification-decision']['score'])
@@ -247,10 +247,10 @@ class ComparisonTests(unittest.TestCase):
         self.assertAlmostEqual(text['scores']['combined_accuracy'], reference['combined_accuracy']['score'])
 
     def test_archived_decision_question_count_includes_binary_targets(self):
-        reference = json.loads(REFERENCE.read_text())
+        reference = json.loads(REFERENCE.read_text(encoding='utf-8'))
         rows = []
         for source in sorted({r['source'] for r in reference['items']}):
-            rows.extend(json.loads((REFERENCE.parent / source).read_text())['by_category'])
+            rows.extend(json.loads((REFERENCE.parent / source).read_text(encoding='utf-8'))['by_category'])
         report = {'model': reference['model'], 'by_category': rows}
         result = compare({'reference': report}, 'decision')['models']['reference']
         self.assertEqual(sum(r['scored_units'] for r in result['items']), 33099)

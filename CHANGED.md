@@ -360,3 +360,127 @@ compiled with the pre-merge (`0583a0c`) and merged servers, the token IDs,
 answer-token IDs, labels, and `usage.input_tokens` are identical, and
 Qwen3.5-0.8B (24 layers, hidden 1024) is not a profiled size, so omitting
 `--classifier-prompt-policy` still resolves to `baseline`.
+
+---
+
+## 10. Upstream sync: image chat on llama.cpp, shared prompt formats, Noul wording
+
+Date: 2026-09-27
+Scope: merge of `featherless-ai/simple-jev` `main` at `dae340e` (14 commits past
+the previous merge base `5686b21`). The GGUF / llama.cpp backend is kept, and
+upstream's Transformers image support is re-implemented on llama.cpp's libmtmd.
+
+### What came from upstream unchanged
+
+- Prompt formats `shared_examples_binary`, `shared_repeat_state` and the
+  experimental `universal_shared`, which keep system instructions uniform across
+  question types so mixed requests keep sharing their context. Auto-selection
+  now uses only `baseline`, `shared_examples_binary` and `shared_repeat_state`
+  (`AUTO_TUNE_POLICIES`). The Qwen dense 4B profile, for example, now resolves
+  to `shared_examples_binary` instead of `strict_mix_repeat2`. `eval/prompt_search.py`
+  searches those three by default; `--all-formats` opts into all seven.
+- Baseline Noul wording `Encode probability 0.1 as 1, 0.2 as 2, and so on
+  through 0.9 as 9.` (upstream `c077d5d`). This fork had already adopted it in
+  `8fd1164`, so there was no conflict. Compared with the wording the README
+  example was recorded with, it adds 22 input tokens to the example request
+  (796 → 818) and changes its Noul score. See "Regression check" below.
+- `render_chat` (coalescing adjacent user turns for strict-alternation templates
+  such as Gemma 3), image request validation, resize bounds
+  (`--max-image-width/--max-image-height/--default-image-max-*`,
+  `media_io_kwargs.image`), and the SSRF-safe public HTTP(S) downloader
+  (`hf_media.py`).
+- Website, demos (web DOOM, emotion camera), agent API guide, eval docs and
+  `experiments/vision_validation/` (upstream's Transformers evidence, kept as a
+  record).
+
+### What was re-implemented for llama.cpp
+
+Upstream's `hf_vision.py` feeds Transformers processors and forks
+`past_key_values`. In this fork, `hf_vision.py` keeps upstream's validation half
+verbatim and replaces the model half with an `MtmdVision` adapter over the
+`llama_cpp.mtmd_cpp` bindings that ship with llama-cpp-python 0.3.35:
+
+- `--mmproj` loads the GGUF vision projector. It accepts a path, a file next to
+  the model, or a file in the `--model` HF repository. `mmproj*.gguf` files are
+  excluded from model discovery. The projector path is resolved before weights
+  load, so a bad name fails fast.
+- Rendering: image blocks become text blocks holding the mtmd media marker
+  (llama-server's convention); the GGUF chat template renders them. Image
+  turns stay block lists (SmolVLM renders only lists); text-only turns are
+  flattened as upstream does. Marker text supplied by a client is rejected.
+- Tokenization: each image is passed through `mtmd_tokenize` on its own, and the
+  text between markers is tokenized with the GGUF vocabulary. This reproduces
+  `mtmd_tokenize` of the whole prompt, verified on real models, but never
+  merges two adjacent same-size images into a Qwen-VL video frame pair. Image
+  embeddings appear in `Branch.token_ids` as request-unique negative placeholder
+  IDs (`Branch.media_spans` records them). The existing common-prefix logic and
+  usage accounting (which counts expanded image tokens, as upstream does)
+  therefore work unchanged.
+- Execution: `LlamaCppBackend._score` generalizes the existing loop. The shared
+  prefix may contain image spans and is never cut inside one. Each image chunk is
+  encoded once per request and its embeddings are copied to request-local
+  memory; `mtmd_helper_decode_image_chunk` decodes them with M-RoPE 2-D
+  positions and model-specific non-causal attention. Row sequences receive the
+  prefix via `llama_memory_seq_cp(0, row, 0, prefix_pos)`, where `prefix_pos`
+  accounts for M-RoPE images taking `n_pos < n_tokens` positions. Image-bearing
+  parts of a row are decoded per row; the text after each row's last image is
+  packed exactly like text suffixes. Text-only requests take the same decode
+  sequence as before this merge.
+- Metrics: `multimodal_shared_prefix` / `multimodal_independent`,
+  `vision_forwards` (projector encodes) and `image_decodes`.
+- `LlamaCppTokenizer` now re-raises template `raise_exception()` errors as
+  `jinja2.TemplateError`, as Transformers does, so `render_chat`'s Gemma 3
+  alternation fallback works.
+- Upstream's Transformers-only tests (`test_vision_groups.py`,
+  `test_vision_integration.py`, `test_vision_processors.py`,
+  `test_inline_processors.py`, and the tiny-torch-model half of `test_vision.py`)
+  are replaced by `tests/test_llama_vision.py`.
+- Dependencies: `Pillow>=10.4` (image decoding only; imported lazily). No torch,
+  torchvision or Transformers.
+
+### Measurements
+
+Real-engine checks, CPU, llama-cpp-python 0.3.35 built from source (Linux x86-64,
+4 threads). `test_llama_vision.py` with `SIMPLE_JEV_GGUF` / `SIMPLE_JEV_MMPROJ`:
+
+| Model (projector) | Token layout = `mtmd_tokenize` | Single-row & same-partition scores vs mtmd reference | Packed requests (both strategies) | HTTP red circle |
+|---|---|---|---|---|
+| unsloth Qwen3.5-0.8B-BF16 (`mmproj-F16.gguf`), hybrid, M-RoPE | equal | within 1e-3 | within 0.2 probability | red / circle |
+| ggml-org Qwen3-VL-2B-Instruct-Q8_0, M-RoPE | equal | 0.0 | within 0.2 probability | red / circle |
+| ggml-org SmolVLM-256M-Instruct-Q8_0, tiled images | equal | within 1e-3 | within 0.2 probability | red / circle |
+| ggml-org gemma-3-4b-it-Q4_K_M (`mmproj-model-f16.gguf`), non-causal image attention | equal | 0.0 | 0.0 (branch 0) | red / circle |
+
+Gemma 3 ran a lighter one-image script instead of the full test: its CPU image encode
+takes ~400 s here, and the full test re-encodes images for every mtmd reference. The
+script's request has two adjacent user turns, so it also exercises the
+strict-alternation fallback.
+
+Finding: llama.cpp's CPU kernels are not batch-invariant. On Qwen3-VL-2B-Q8_0,
+decoding a ~500-token branch's final token in its own batch moves its logits by
+0.17, and packing branches together moves them by up to ~0.6. Splitting the
+same text mid-way changes nothing. **Text-only** requests on the unchanged,
+pre-merge code path show the same 0.16–0.44 differences against independent
+full-prompt decodes, with flash attention on or off and with CPU weight repacking
+on or off. It is an engine property, not an image-path error. It was invisible
+before because `test_llama_backend.py`'s fidelity test uses ~13-token prompts. The
+image test therefore checks strict equality where the decode partition matches
+and bounds fully packed requests in probability space. The precision notes in
+`hf-server/README.md` no longer claim bit-exact shared-prefix scores in general.
+
+### Regression check (`Qwen3.5-0.8B-BF16`, `--device cpu --dtype float32 --classifier-prompt-policy baseline`)
+
+The README example request (bicycle / Max) was served before and after the merge:
+
+- Pre-merge HEAD `ff78aad` and this merge return **byte-identical** JSON:
+  `color` red 0.99998069, `support` score 1.52382, `dog` noul 0.036213,
+  `usage.input_tokens` 818.
+- The README's recorded output (796 tokens, noul 0.010085, color 0.99998021)
+  predates `8fd1164`'s Noul wording and was measured on an RTX 4060. The
+  pre-wording commit `d5d6875` on this CPU gives 796 tokens, noul 0.010079 and
+  color 0.99998069, matching it up to GPU/CPU rounding. The 22-token and Noul
+  differences come from the wording change that both this fork and upstream
+  adopted.
+- The README comparison was re-recorded on CPU with the current wording: upstream's
+  PyTorch server (`dae340e`, PyTorch 2.14 CPU, Transformers 5.17, `Qwen/Qwen3.5-0.8B`)
+  and this server (`unsloth/Qwen3.5-0.8B-GGUF` / `Qwen3.5-0.8B-BF16.gguf`) both report
+  818 input tokens. Noul is 0.03558 vs 0.03621 and score 1.52727 vs 1.52382.
