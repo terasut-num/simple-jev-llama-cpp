@@ -480,3 +480,7 @@ The README example request (bicycle / Max) was served before and after the merge
   color 0.99998069, matching it up to GPU/CPU rounding. The 22-token and Noul
   differences come from the wording change that both this fork and upstream
   adopted.
+- The README comparison was re-recorded on CPU with the current wording: upstream's
+  PyTorch server (`dae340e`, PyTorch 2.14 CPU, Transformers 5.17, `Qwen/Qwen3.5-0.8B`)
+  and this server (`unsloth/Qwen3.5-0.8B-GGUF` / `Qwen3.5-0.8B-BF16.gguf`) both report
+  818 input tokens. Noul is 0.03558 vs 0.03621 and score 1.52727 vs 1.52382.

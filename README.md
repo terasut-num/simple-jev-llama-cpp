@@ -280,8 +280,10 @@ Question IDs become keys in `answers`.
 
 ### CPU comparison with the original PyTorch server from [`Original repository`](https://github.com/featherless-ai/simple-jev)
 
-The following results use the same request. The original server ran the
-Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint with PyTorch and A100 (80 GB):
+The following results use the same request, both on CPU with `--device cpu --dtype float32
+--classifier-prompt-policy baseline --max-model-len 4096 --max-batch-size 4 --max-batch-tokens 4096`.
+The original server (upstream `dae340e`, PyTorch 2.14 CPU, Transformers 5.17) ran the
+Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint:
 
 ```json
 {
@@ -292,7 +294,7 @@ Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint with PyTorch and A100 (80 GB):
             "confidence": 0.9999804496765137,
             "probabilities": {
                 "red": 0.9999804496765137,
-                "blue": 1.9588253053370863e-05
+                "blue": 1.9588402210501954e-05
             },
             "choice": "red"
         },
@@ -300,7 +302,7 @@ Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint with PyTorch and A100 (80 GB):
             "type": "score",
             "confidence": 0.5364056825637817,
             "probabilities": {
-                "0": 0.009136191569268703,
+                "0": 0.009136209264397621,
                 "1": 0.4544581472873688,
                 "2": 0.5364056825637817
             },
@@ -313,62 +315,67 @@ Hugging Face `Qwen/Qwen3.5-0.8B` checkpoint with PyTorch and A100 (80 GB):
         },
         "dog": {
             "type": "noul",
-            "noul": 0.010081952810287469
+            "noul": 0.03558291614055632
         }
     },
     "usage": {
-        "input_tokens": 796,
+        "input_tokens": 818,
         "output_tokens": 0
     }
 }
 ```
 
-The llama.cpp server ran `Qwen3.5-0.8B-BF16.gguf` on GPU (RTX 4060) with `--dtype float32 --classifier-prompt-policy baseline`:
+The llama.cpp server (llama-cpp-python 0.3.35) ran `Qwen3.5-0.8B-BF16.gguf` from
+`unsloth/Qwen3.5-0.8B-GGUF`:
 
 ```json
 {
-  "model": "unsloth/Qwen3.5-0.8B-GGUF",
-  "answers": {
-    "color": {
-      "type": "choice",
-      "confidence": 0.9999802112579346,
-      "probabilities": {
-        "red": 0.9999802112579346,
-        "blue": 1.9806906493613496e-05
-      },
-      "choice": "red"
+    "model": "unsloth/Qwen3.5-0.8B-GGUF",
+    "answers": {
+        "color": {
+            "type": "choice",
+            "confidence": 0.9999806880950928,
+            "probabilities": {
+                "red": 0.9999806880950928,
+                "blue": 1.933676321641542e-05
+            },
+            "choice": "red"
+        },
+        "support": {
+            "type": "score",
+            "confidence": 0.532999575138092,
+            "probabilities": {
+                "0": 0.009177694097161293,
+                "1": 0.4578227400779724,
+                "2": 0.532999575138092
+            },
+            "score": 1.5238218307495117,
+            "legend": {
+                "0": "Unsupported",
+                "1": "Partially supported",
+                "2": "Fully supported"
+            }
+        },
+        "dog": {
+            "type": "noul",
+            "noul": 0.03621333360671996
+        }
     },
-    "support": {
-      "type": "score",
-      "confidence": 0.5352787971496582,
-      "probabilities": {
-        "0": 0.009363764896988869,
-        "1": 0.45535746216773987,
-        "2": 0.5352787971496582
-      },
-      "score": 1.5259150266647339,
-      "legend": {
-        "0": "Unsupported",
-        "1": "Partially supported",
-        "2": "Fully supported"
-      }
-    },
-    "dog": {
-      "type": "noul",
-      "noul": 0.010085486769676195
+    "usage": {
+        "input_tokens": 818,
+        "output_tokens": 0
     }
-  },
-  "usage": {
-    "input_tokens": 796,
-    "output_tokens": 0
-  }
 }
 ```
 
 Both servers selected `red`, placed `support` toward the third rubric level,
-and reported 796 input tokens. Their probabilities and score differ slightly,
-as expected from the FP16 GGUF weights and differing PyTorch/llama.cpp numeric
-implementations described above.
+and reported 818 input tokens: they compile the identical prompt. Their
+probabilities and score differ slightly, as expected from the BF16 GGUF weights
+and differing PyTorch/llama.cpp numeric implementations described above. The
+response `model` is the served ID; the output above was started with
+`--model unsloth/Qwen3.5-0.8B-GGUF --gguf-file Qwen3.5-0.8B-BF16.gguf`. Results
+recorded before the Noul wording `Encode probability 0.1 as 1, 0.2 as 2, and so on
+through 0.9 as 9.` (796 input tokens, Noul about 0.010) are not comparable with these.
 
 | Question type | Input criteria | Result |
 | --- | --- | --- |
