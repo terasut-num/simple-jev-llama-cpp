@@ -224,8 +224,8 @@ def main():
     (out / 'images').mkdir(exist_ok=True)
     for name, image in images.items():
         (out / 'images' / name).write_bytes(image)
-    (out / 'results.json').write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
-    (out / 'public-examples.json').write_text(json.dumps(examples, ensure_ascii=False, separators=(',', ':')) + '\n')
+    (out / 'results.json').write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8', newline='\n')
+    (out / 'public-examples.json').write_text(json.dumps(examples, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8', newline='\n')
     (out / 'LICENSE-jevbench.txt').write_bytes((root / ev / 'vendor/jevbench/LICENSE').read_bytes())
     print(f'Exported 6 models, 26 decision items, 7 vision configurations, 231 public examples to {out}')
 

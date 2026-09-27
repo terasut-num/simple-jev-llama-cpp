@@ -323,7 +323,7 @@ def main():
                     },
                     indent=2,
                 )
-            )
+            , encoding='utf-8', newline='\n')
     results = trainer.evaluate()
     trainer.log_metrics("eval", results)
     trainer.save_metrics("eval", results)

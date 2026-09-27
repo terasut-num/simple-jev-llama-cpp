@@ -68,7 +68,7 @@ class SearchTests(unittest.TestCase):
     def test_policy_lists_match_server_registry(self):
         # Keep offline orchestration independent of server/runtime dependencies.
         import ast
-        tree = ast.parse((search.ROOT / 'hf-server/hf_prompt_policies.py').read_text())
+        tree = ast.parse((search.ROOT / 'hf-server/hf_prompt_policies.py').read_text(encoding='utf-8'))
         constants = {target.id: ast.literal_eval(node.value)
                      for node in tree.body if isinstance(node, ast.Assign)
                      for target in node.targets if isinstance(target, ast.Name)
@@ -176,9 +176,9 @@ class SearchTests(unittest.TestCase):
             def evaluate(command, **kwargs):
                 if mode == 'interrupt': raise KeyboardInterrupt()
                 if mode == 'timeout': raise subprocess.TimeoutExpired(command, 1)
-                if command[1].endswith('/run.py'):
+                if Path(command[1]).name == 'run.py':
                     target = Path(command[command.index('--output') + 1]); target.mkdir()
-                    (target / 'summary.json').write_text(json.dumps(summaries()))
+                    (target / 'summary.json').write_text(json.dumps(summaries()), encoding='utf-8', newline='\n')
                 return subprocess.CompletedProcess(command, 1 if mode == 'failure' else 0)
             with patch.object(search, 'preflight', return_value={}), \
                  patch.object(search, 'source_hashes', return_value={}), \
@@ -192,7 +192,7 @@ class SearchTests(unittest.TestCase):
                 else:
                     search.run_policy(args, 'baseline', directory, provenance)
             process.terminate.assert_called_once()
-            result = json.loads((directory / 'result.json').read_text())
+            result = json.loads((directory / 'result.json').read_text(encoding='utf-8'))
             self.assertEqual(launch.call_args.args[0][3], 'physical')
             return result
 

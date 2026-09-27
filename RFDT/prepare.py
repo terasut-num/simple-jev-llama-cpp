@@ -213,7 +213,7 @@ def main():
             "provenance": provenance,
         }
         # Append only fully validated results. A malformed answer never enters a split.
-        with cache_path.open("a") as stream:
+        with cache_path.open("a", encoding='utf-8', newline='\n') as stream:
             stream.write(
                 json.dumps({"key": cache_key, "record": record}, ensure_ascii=False)
                 + "\n"
@@ -226,7 +226,7 @@ def main():
         temporary = path.with_suffix(".tmp")
         temporary.write_text(
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records)
-        )
+        , encoding='utf-8', newline='\n')
         temporary.replace(path)
     print(
         f"Wrote {len(train)} training and {len(validation)} validation records to {directory}"

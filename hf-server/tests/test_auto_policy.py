@@ -91,7 +91,7 @@ def test_search_candidates_match_server_policies():
     import ast
     from pathlib import Path
     from hf_prompt_policies import AUTO_TUNE_POLICIES
-    module = ast.parse((Path(__file__).resolve().parents[2] / 'eval/prompt_search.py').read_text())
+    module = ast.parse((Path(__file__).resolve().parents[2] / 'eval/prompt_search.py').read_text(encoding='utf-8'))
     value = next(node.value for node in module.body if isinstance(node, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == 'POLICIES' for t in node.targets))
     assert ast.literal_eval(value) == AUTO_TUNE_POLICIES

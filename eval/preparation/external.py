@@ -15,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def read(path):
-    return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in Path(path).read_text(encoding='utf-8').splitlines() if line.strip()]
 
 
 def canonical(id,state,question,options,label,family,group=None,**extra):
@@ -95,12 +95,12 @@ def main():
     files=[p for p in (args.documents,args.queries,args.candidates) if p]
     meta={'source':args.source,'rows':len(rows),'files':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
           'converter_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-          'upstream':{p.parent.name:json.loads(p.read_text()) for p in (ROOT/'vendor').glob('*/source.json')}}
+          'upstream':{p.parent.name:json.loads(p.read_text(encoding='utf-8')) for p in (ROOT/'vendor').glob('*/source.json')}}
     args.output.parent.mkdir(parents=True,exist_ok=True)
     content=''.join(json.dumps(row,ensure_ascii=False)+'\n' for row in rows)
     meta['dataset_sha256']=hashlib.sha256(content.encode()).hexdigest()
-    args.output.write_text(content)
-    args.output.with_suffix('.provenance.json').write_text(json.dumps(meta,indent=2)+'\n')
+    args.output.write_text(content, encoding='utf-8', newline='\n')
+    args.output.with_suffix('.provenance.json').write_text(json.dumps(meta,indent=2)+'\n', encoding='utf-8', newline='\n')
     print(f'Prepared {len(rows)} rows at {args.output}; no inference performed')
 
 

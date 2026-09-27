@@ -19,8 +19,8 @@ class VisionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);(root/'images').mkdir()
             (root/row['image_path']).write_bytes(PNG)
-            (root/'rows.jsonl').write_text(json.dumps(row)+'\n')
-            (root/'suite.json').write_text(json.dumps({'schema_version':1,'id':'tiny','version':'1','adapter':'vision-choice-v1','dataset':'rows.jsonl'}))
+            (root/'rows.jsonl').write_text(json.dumps(row)+'\n', encoding='utf-8', newline='\n')
+            (root/'suite.json').write_text(json.dumps({'schema_version':1,'id':'tiny','version':'1','adapter':'vision-choice-v1','dataset':'rows.jsonl'}), encoding='utf-8', newline='\n')
             _,adapter,_,rows=load_suite(root/'suite.json')
             body=adapter.request_for(rows[0],'vision-model')
             self.assertEqual(set(body),{'model','messages','questions'})
@@ -40,7 +40,7 @@ class VisionTests(unittest.TestCase):
     def test_original_class_sets_and_failure_scoring(self):
         root=Path(__file__).resolve().parents[1]
         for name,count,size in [('vision-cifar10',10,10000),('vision-oxford-pets',37,3669)]:
-            cfg=json.loads((root/'vendor/vision'/f'{name}.json').read_text())
+            cfg=json.loads((root/'vendor/vision'/f'{name}.json').read_text(encoding='utf-8'))
             self.assertEqual(len(cfg['source_labels']),count)
             self.assertEqual(cfg['source_rows'],size)
             self.assertNotIn('selected_labels',cfg)

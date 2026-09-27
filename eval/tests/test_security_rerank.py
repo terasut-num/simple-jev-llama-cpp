@@ -41,7 +41,7 @@ class CommunityTests(unittest.TestCase):
         with self.assertRaises(ValueError): phishing([], 'QUESTIONS = dict()')
 
     def test_security_blinding_and_pairs(self):
-        b=json.loads((Path(__file__).resolve().parents[1]/'vendor/jev-sec-bench/batteries.json').read_text())
+        b=json.loads((Path(__file__).resolve().parents[1]/'vendor/jev-sec-bench/batteries.json').read_text(encoding='utf-8'))
         samples=[{'label':y,'probability':.99,'code':'example','language':'python','class':'secret gold','pair_id':7} for y in [0,1]]
         rows=security(samples,b,'code')
         self.assertEqual(set(battery.request_for(rows[0],'m')['state']),{'language','code'})

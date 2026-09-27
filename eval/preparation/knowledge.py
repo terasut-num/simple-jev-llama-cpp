@@ -62,7 +62,7 @@ def prepare(suite, sources, download=False):
     names = sorted(p.stem for p in (ROOT/'vendor/knowledge').glob('codemmlu-*.json')) if suite=='codemmlu-full' else [suite]
     rows, provenance = [], {}
     for name in names:
-        meta = json.loads((ROOT/'vendor/knowledge'/f'{name}.json').read_text())
+        meta = json.loads((ROOT/'vendor/knowledge'/f'{name}.json').read_text(encoding='utf-8'))
         path = sources/meta['file']
         if not path.exists():
             if not download:
@@ -100,11 +100,11 @@ def main():
     if a.output.exists() or sidecar.exists(): p.error('Refusing to overwrite')
     rows,sources=prepare(a.suite,a.sources,a.download)
     content=''.join(json.dumps(r,ensure_ascii=False)+'\n' for r in rows)
-    a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(content)
+    a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(content, encoding='utf-8', newline='\n')
     sidecar.write_text(json.dumps({'sources':sources,'rows':len(rows),
         'protocol':'classifier Choice; no generated reasoning, retrieval or tool execution',
         'dataset_sha256':hashlib.sha256(content.encode()).hexdigest(),
-        'preparer_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},indent=2)+'\n')
+        'preparer_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},indent=2)+'\n', encoding='utf-8', newline='\n')
     print(f'Prepared {len(rows)} rows; no inference performed')
 
 

@@ -47,7 +47,7 @@ def collect(runs, project_filter=None):
     identity = None
     for root in runs:
         for manifest_path in sorted(Path(root).glob('*/manifest.json')):
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
             verify_evaluator(manifest)
             if project_filter is not None and manifest['suite']['project'] != project_filter:
                 continue
@@ -62,7 +62,7 @@ def collect(runs, project_filter=None):
             if hashlib.sha256(raw).hexdigest() != manifest['scoring_rows_sha256']:
                 raise ValueError('Scoring rows changed after the run')
             rows = [json.loads(l) for l in raw.splitlines() if l.strip()]
-            records = [json.loads(l) for l in (directory/'predictions.jsonl').read_text().splitlines() if l.strip()]
+            records = [json.loads(l) for l in (directory/'predictions.jsonl').read_text(encoding='utf-8').splitlines() if l.strip()]
             predictions = {r['id']:r for r in records}
             if len(predictions)!=len(records) or not set(predictions)<= {r['id'] for r in rows}:
                 raise ValueError('Duplicate or unknown prediction IDs')
@@ -130,9 +130,9 @@ def markdown(report, view):
 def write_reports(root):
     report=collect([root])
     root=Path(root)
-    (root/'report.json').write_text(json.dumps(report,indent=2)+'\n')
+    (root/'report.json').write_text(json.dumps(report,indent=2)+'\n', encoding='utf-8', newline='\n')
     for view in ('category','project'):
-        (root/f'by-{view}.md').write_text(markdown(report,view))
+        (root/f'by-{view}.md').write_text(markdown(report,view), encoding='utf-8', newline='\n')
     return report
 
 
@@ -147,7 +147,7 @@ raw evidence, and returned model IDs identify the actual provider release.
     projects = defaultdict(list)
     for root in runs:
         for path in sorted(Path(root).glob('*/manifest.json')):
-            manifest = json.loads(path.read_text())
+            manifest = json.loads(path.read_text(encoding='utf-8'))
             projects[manifest['suite']['project']].append((path,manifest))
     index = ['# Jev endpoint benchmark results', '',
         'Only completed runs supplied to this export are listed. This is not a claim that all catalog benchmarks have finished.', '',
@@ -172,7 +172,7 @@ raw evidence, and returned model IDs identify the actual provider release.
                         hasher.update(chunk)
                     digest = hasher.hexdigest()
                 evidence['sha256'][name] = digest
-            with (path.parent/'predictions.jsonl').open() as stream:
+            with (path.parent/'predictions.jsonl').open(encoding='utf-8') as stream:
                 for line in stream:
                     response = json.loads(line).get('response',{})
                     if response.get('model'): returned_models.add(response['model'])
@@ -188,15 +188,15 @@ raw evidence, and returned model IDs identify the actual provider release.
                 for p in [*Path(__file__).parent.glob('*.py'),*Path(__file__).parent.glob('adapters/*.py')]} ,'returned_models':sorted(returned_models),
             'usage':usage,'artifacts':artifacts,
             'cost_scope':'Sum of usage.cost in saved responses; excludes probes, discarded attempts, and any billed requests without saved responses.'}
-        (folder/'results.json').write_text(json.dumps(report,indent=2)+'\n')
+        (folder/'results.json').write_text(json.dumps(report,indent=2)+'\n', encoding='utf-8', newline='\n')
         text = markdown(report,'project')+'\n'+markdown(report,'category')
         text += ('\n## Provenance\n\nActual returned models: '+', '.join(sorted(returned_models))+
                  f". Recorded response cost: ${usage['reported_cost_usd']:.6f}.\n\n"+
                  'See [results.json](results.json) for settings, source hashes, raw artifact locations, and cost scope. '+
                  'Raw predictions and scoring inputs remain in the ignored run archive.\n')
-        (folder/'report.md').write_text(text)
+        (folder/'report.md').write_text(text, encoding='utf-8', newline='\n')
         index.append(f'| {project} | [Results]({slug}/report.md) |')
-    (destination/'README.md').write_text('\n'.join(index)+'\n')
+    (destination/'README.md').write_text('\n'.join(index)+'\n', encoding='utf-8', newline='\n')
 
 
 def main():

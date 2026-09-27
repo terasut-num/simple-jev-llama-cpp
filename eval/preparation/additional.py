@@ -89,7 +89,7 @@ def main():
         if not a.checkout or not a.form: p.error('--checkout and --form required')
         # Require exact source revision, while file hashes also expose dirty artifacts.
         import subprocess
-        pinned=json.loads((ROOT/'vendor/jev-search-rerank-eval/source.json').read_text())['revision']
+        pinned=json.loads((ROOT/'vendor/jev-search-rerank-eval/source.json').read_text(encoding='utf-8'))['revision']
         if subprocess.check_output(['git','-C',str(a.checkout),'rev-parse','HEAD'],text=True).strip()!=pinned:
             p.error('Search checkout differs from pinned revision')
         rows=search(lambda path:load(a.checkout/path),a.form,a.label_set)
@@ -100,9 +100,9 @@ def main():
     meta={'source':a.source,'rows':len(rows),'condition':a.condition,'form':a.form,'label_set':a.label_set,
           'files':files,'converter_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
           'dataset_sha256':hashlib.sha256(content.encode()).hexdigest(),
-          'upstream':{p.parent.name:json.loads(p.read_text()) for p in (ROOT/'vendor').glob('*/source.json')}}
+          'upstream':{p.parent.name:json.loads(p.read_text(encoding='utf-8')) for p in (ROOT/'vendor').glob('*/source.json')}}
     a.output.parent.mkdir(parents=True,exist_ok=True)
-    a.output.write_text(content);sidecar.write_text(json.dumps(meta,indent=2)+'\n')
+    a.output.write_text(content, encoding='utf-8', newline='\n');sidecar.write_text(json.dumps(meta,indent=2)+'\n', encoding='utf-8', newline='\n')
     print(f'Prepared {len(rows)} rows; no inference performed')
 
 

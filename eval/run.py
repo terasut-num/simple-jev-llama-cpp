@@ -40,7 +40,7 @@ def main():
         return
     if not all((args.endpoint, args.model, args.output)):
         parser.error('--endpoint, --model and --output are required for execution')
-    args.deployment = json.loads(args.deployment_info.read_text()) if args.deployment_info else None
+    args.deployment = json.loads(args.deployment_info.read_text(encoding='utf-8')) if args.deployment_info else None
     if args.deployment is not None and not isinstance(args.deployment, dict):
         parser.error('--deployment-info must contain a JSON object without secrets')
     if args.delay < 0 or args.timeout <= 0 or args.retries < 0 or args.workers < 1:
@@ -69,7 +69,7 @@ def main():
     reports = {}
     for suite, adapter, source, rows in loaded:
         reports[suite['id']] = run_suite(args,key,suite,adapter,source,rows)
-    (args.output/'summary.json').write_text(json.dumps(reports,indent=2)+'\n')
+    (args.output/'summary.json').write_text(json.dumps(reports,indent=2)+'\n', encoding='utf-8', newline='\n')
     from report import write_reports
     write_reports(args.output)
     if any(r['failed_rows'] for r in reports.values()):
@@ -141,14 +141,14 @@ def run_suite(args, key, suite, adapter, source, rows):
     predictions_path = output_dir/'predictions.jsonl'
     records = {}
     if args.resume and manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
         if any(manifest.get(k) != v for k,v in identity.items()):
             raise ValueError('Resume requires identical model, data, protocol and execution settings')
         scoring_raw = (output_dir/'scoring_rows.jsonl').read_bytes()
         if hashlib.sha256(scoring_raw).hexdigest() != manifest['scoring_rows_sha256']:
             raise ValueError('Scoring inputs changed after the original run')
         if predictions_path.exists():
-            saved = [json.loads(line) for line in predictions_path.read_text().splitlines() if line.strip()]
+            saved = [json.loads(line) for line in predictions_path.read_text(encoding='utf-8').splitlines() if line.strip()]
             records = {r['id']:r for r in saved}
             if len(records) != len(saved) or not records.keys() <= {r['id'] for r in rows}:
                 raise ValueError('Invalid saved prediction IDs')
@@ -157,12 +157,12 @@ def run_suite(args, key, suite, adapter, source, rows):
         manifest = dict(identity, started_at_unix=time.time(),
             runner_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
         scoring = ''.join(json.dumps({k:v for k,v in row.items() if not k.startswith('_')}, ensure_ascii=False)+'\n' for row in rows)
-        (output_dir/'scoring_rows.jsonl').write_text(scoring)
+        (output_dir/'scoring_rows.jsonl').write_text(scoring, encoding='utf-8', newline='\n')
         manifest['scoring_rows_sha256'] = hashlib.sha256(scoring.encode()).hexdigest()
-        manifest_path.write_text(json.dumps(manifest, indent=2)+'\n')
+        manifest_path.write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8', newline='\n')
     pending_rows = (row for row in rows if row['id'] not in records)
     # Keep at most workers futures in memory, even for 400k+ example datasets.
-    with predictions_path.open('a') as output, ThreadPoolExecutor(max_workers=args.workers) as pool:
+    with predictions_path.open('a', encoding='utf-8', newline='\n') as output, ThreadPoolExecutor(max_workers=args.workers) as pool:
         pending = set()
         last_dispatch = 0.0
         consecutive_errors = 0
@@ -197,7 +197,7 @@ def run_suite(args, key, suite, adapter, source, rows):
     report = adapter.summarize(rows,ordered)
     for field in ('category','subcategory','modality','language_group','languages'):
         report[field] = suite.get(field, [] if field=='languages' else 'unspecified')
-    (output_dir/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
+    (output_dir/'summary.json').write_text(json.dumps(report,indent=2)+'\n', encoding='utf-8', newline='\n')
     print(json.dumps(report,indent=2),flush=True)
     return report
 

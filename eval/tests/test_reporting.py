@@ -13,7 +13,7 @@ class ReportingTests(unittest.TestCase):
         out=Path(root)/name;out.mkdir()
         raw=''.join(json.dumps(r)+'\n' for r in rows).encode()
         (out/'scoring_rows.jsonl').write_bytes(raw)
-        (out/'predictions.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in records))
+        (out/'predictions.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in records), encoding='utf-8', newline='\n')
         manifest={'model':'test-model','endpoint':'http://example/v1/classifier',
                   'dataset_sha256':'same-original-dataset',
                   'suite':{'adapter':'choice-v1','headline_metric':'accuracy'},
@@ -21,7 +21,7 @@ class ReportingTests(unittest.TestCase):
                   'scoring_rows_sha256':hashlib.sha256(raw).hexdigest(),
                   'reporting':{'project':'Example','configuration':'test',
                                'expected_suites':['small','large'],'partitions':partitions}}
-        (out/'manifest.json').write_text(json.dumps(manifest))
+        (out/'manifest.json').write_text(json.dumps(manifest), encoding='utf-8', newline='\n')
 
     def row(self,id,family):
         return {'id':id,'group_id':id,'family':family,'label':0,
@@ -63,6 +63,6 @@ class ReportingTests(unittest.TestCase):
     def test_reject_changed_scoring_inputs(self):
         with tempfile.TemporaryDirectory() as root:
             self.write_run(root,'small',[self.row('a','small')],[],[self.partition('small','legal')])
-            (Path(root)/'small/scoring_rows.jsonl').write_text('')
+            (Path(root)/'small/scoring_rows.jsonl').write_text('', encoding='utf-8', newline='\n')
             with self.assertRaisesRegex(ValueError,'changed'):
                 collect([root])

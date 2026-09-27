@@ -23,7 +23,7 @@ from common import ClassifierRequest, prepare_prompt
 def read_jsonl(path):
     """Load records with actionable line numbers; never silently skip bad data."""
     rows = []
-    with open(path) as stream:
+    with open(path, encoding='utf-8') as stream:
         for line, text in enumerate(stream, 1):
             if not text.strip():
                 continue

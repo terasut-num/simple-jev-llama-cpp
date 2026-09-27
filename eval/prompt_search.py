@@ -36,7 +36,7 @@ COUNTS = {'jevbench-public': 231, 'semif-authored': 144, 'semif-typesafe': 102}
 
 def write_json(path, value):
     temporary = path.with_suffix(path.suffix + '.tmp')
-    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n', encoding='utf-8', newline='\n')
     temporary.replace(path)
 
 
@@ -196,7 +196,7 @@ def run_policy(args, policy, directory, provenance):
         port_available(args.port)  # Never reuse or stop an existing listener.
         if source_hashes() != provenance['source_sha256'] or preflight() != provenance['dataset_sha256']:
             raise ValueError('Source or datasets changed during search')
-        with (directory / 'server.log').open('w') as log:
+        with (directory / 'server.log').open('w', encoding='utf-8', newline='\n') as log:
             server = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
             write_json(directory / 'process.json', {'pid': server.pid,
                        'started_at_unix': time.time(), 'served_model_name': served})
@@ -210,13 +210,13 @@ def run_policy(args, policy, directory, provenance):
             write_json(directory / 'eval-command.json', run)
             environment = {**os.environ, 'NO_PROXY': '127.0.0.1,localhost',
                            'no_proxy': '127.0.0.1,localhost'}
-            with (directory / 'eval.log').open('w') as evaluation_log:
+            with (directory / 'eval.log').open('w', encoding='utf-8', newline='\n') as evaluation_log:
                 completed = subprocess.run(run, stdout=evaluation_log, stderr=subprocess.STDOUT,
                                            timeout=args.eval_timeout, env=environment)
             result['evaluation_exit_code'] = completed.returncode
             if completed.returncode:
                 raise RuntimeError('Evaluation failed or contains failed rows; inspect eval.log and raw records')
-            with (directory / 'audit.log').open('w') as audit_log:
+            with (directory / 'audit.log').open('w', encoding='utf-8', newline='\n') as audit_log:
                 audit = subprocess.run([sys.executable, str(ROOT / 'eval/audit.py'),
                                         '--run', str(directory / 'eval'), '--preset', 'quick'],
                                        stdout=audit_log, stderr=subprocess.STDOUT, timeout=300)
@@ -224,7 +224,7 @@ def run_policy(args, policy, directory, provenance):
                 raise RuntimeError('Native response/coverage audit failed; inspect audit.log')
             if source_hashes() != provenance['source_sha256'] or preflight() != provenance['dataset_sha256']:
                 raise ValueError('Source or datasets changed during evaluation')
-            summary = json.loads((directory / 'eval/summary.json').read_text())
+            summary = json.loads((directory / 'eval/summary.json').read_text(encoding='utf-8'))
             result.update(status='complete', correct=native_total(summary), rows=477, suites=summary)
     except KeyboardInterrupt:
         result.update(status='interrupted', error='Interrupted by user')
@@ -332,7 +332,7 @@ def main(argv=None):
         # The interrupted policy's own result/logs are already persisted.
         partial = args.output / policy / 'result.json'
         if partial.is_file() and not any(r['policy'] == policy for r in results):
-            results.append(json.loads(partial.read_text()))
+            results.append(json.loads(partial.read_text(encoding='utf-8')))
         write_json(args.output / 'comparison.json', comparison(results, args.policies))
         return 130
     finally:
